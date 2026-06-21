@@ -1,0 +1,9 @@
+# Runtime data — never commit live player points
+user_data.json
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Environment
+.env
