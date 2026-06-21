@@ -100,6 +100,7 @@ def get_user(user_id):
             'last_daily': None, 'last_monthly': None,
             'wager_at_last_monthly': 0, 'rakeback_available': 0.0, 'clan': None,
             'bonus_received': 0, 'tips_sent': 0, 'tips_received': 0, 'total_withdrawn': 0,
+            'wager_requirement': 0, 'wager_since_promo': 0, 'total_deposited': 0.0,
         }
         save_data(data)
     u = data[uid]; changed = False
@@ -108,6 +109,7 @@ def get_user(user_id):
         ('rakeback_available', 0.0), ('clan', None), ('bonus_received', 0),
         ('tips_sent', 0), ('tips_received', 0), ('total_withdrawn', 0),
         ('daily_invites', 0), ('daily_invites_date', None), ('total_invites', 0),
+        ('wager_requirement', 0), ('wager_since_promo', 0), ('total_deposited', 0.0),
     ]:
         if key not in u: u[key] = default; changed = True
     if 'total_lost' not in u.get('stats', {}):
@@ -886,6 +888,238 @@ async def updwithdraw(ctx, member: discord.Member, amount: int):
         f"**User:** {member.name}\n**Added:** {amount:,} pts\n"
         f"**Total Withdrawn:** {data[uid]['total_withdrawn']:,} pts"), color=0x00FF88)
     await ctx.send(embed=embed)
+
+
+@bot.command(name='updatedeposit')
+@commands.has_permissions(administrator=True)
+async def updatedeposit(ctx, member: discord.Member, amount: float):
+    if amount < 0:
+        await ctx.send("❌ Amount cannot be negative!")
+        return
+    data, uid = get_user(member.id)
+    data[uid]['total_deposited'] = data[uid].get('total_deposited', 0.0) + amount
+    save_data(data)
+    embed = discord.Embed(title="💰 Deposit Updated", description=(
+        f"**User:** {member.name}\n**Added:** ${amount:.2f}\n"
+        f"**Total Deposited:** ${data[uid]['total_deposited']:.2f}"), color=0x00FF88)
+    await ctx.send(embed=embed)
+
+
+@updatedeposit.error
+async def updatedeposit_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("🚫 Administrator permission required!")
+    elif isinstance(error, commands.MemberNotFound):
+        await ctx.send("❌ Member not found — mention them with @")
+    else:
+        await ctx.send("❌ Usage: `.updatedeposit @user <usd_amount>`")
+
+
+class PromoMultiplierView(discord.ui.View):
+    def __init__(self, author_id, member, amount):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+        self.member = member
+        self.amount = amount
+
+    @discord.ui.button(label='1×', style=discord.ButtonStyle.secondary, custom_id='promo_1x')
+    async def mult_1x(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.apply_promo(interaction, 1)
+
+    @discord.ui.button(label='2×', style=discord.ButtonStyle.primary, custom_id='promo_2x')
+    async def mult_2x(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.apply_promo(interaction, 2)
+
+    @discord.ui.button(label='3×', style=discord.ButtonStyle.primary, custom_id='promo_3x')
+    async def mult_3x(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.apply_promo(interaction, 3)
+
+    @discord.ui.button(label='5×', style=discord.ButtonStyle.success, custom_id='promo_5x')
+    async def mult_5x(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.apply_promo(interaction, 5)
+
+    @discord.ui.button(label='10×', style=discord.ButtonStyle.success, custom_id='promo_10x')
+    async def mult_10x(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.apply_promo(interaction, 10)
+
+    @discord.ui.button(label='20×', style=discord.ButtonStyle.danger, custom_id='promo_20x')
+    async def mult_20x(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.apply_promo(interaction, 20)
+
+    async def apply_promo(self, interaction, multiplier):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ Only the admin who started this can select a multiplier!", ephemeral=True)
+            return
+
+        wager_req = self.amount * multiplier
+        old_bal = get_user_balance(self.member.id)
+        new_bal = old_bal + self.amount
+        set_user_balance(self.member.id, new_bal)
+
+        data, uid = get_user(self.member.id)
+        data[uid]['wager_requirement'] = data[uid].get('wager_requirement', 0) + wager_req
+        data[uid]['wager_since_promo'] = data[uid]['stats'].get('total_wagered', 0)
+        save_data(data)
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        embed = discord.Embed(
+            title="🎁  Promo Applied!",
+            color=0x00FF88
+        )
+        embed.add_field(name="User", value=self.member.mention, inline=False)
+        embed.add_field(name="Points Added", value=f"R${self.amount:,}", inline=True)
+        embed.add_field(name="Multiplier", value=f"{multiplier}×", inline=True)
+        embed.add_field(name="Wager Requirement", value=f"R${wager_req:,}", inline=True)
+        embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+        embed.set_footer(text="User must wager this amount before withdrawing.")
+
+        await interaction.followup.send(embed=embed)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        try:
+            await self.message.edit(view=self)
+        except:
+            pass
+
+
+@bot.command(name='promo')
+@commands.has_permissions(administrator=True)
+async def promo(ctx, member: discord.Member, amount: int):
+    if amount <= 0:
+        await ctx.send("❌ Amount must be positive!")
+        return
+
+    embed = discord.Embed(
+        title="🎁  Promo — Select Multiplier",
+        description=(
+            f"**User:** {member.mention}\n"
+            f"**Amount:** R${amount:,}\n\n"
+            f"Select a wager multiplier requirement.\n"
+            f"The user must wager `amount × multiplier` before withdrawing."
+        ),
+        color=0x9B59B6
+    )
+
+    view = PromoMultiplierView(ctx.author.id, member, amount)
+    view.message = await ctx.send(embed=embed, view=view)
+
+
+@promo.error
+async def promo_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("🚫 Administrator permission required!")
+    elif isinstance(error, commands.MemberNotFound):
+        await ctx.send("❌ Member not found — mention them with @")
+    else:
+        await ctx.send("❌ Usage: `.promo @user <amount>`")
+
+
+@bot.command(name='wager')
+async def wager_status(ctx):
+    data, uid = get_user(ctx.author.id)
+    wager_req = data[uid].get('wager_requirement', 0)
+    if wager_req <= 0:
+        await ctx.send("✅ You have no active wager requirements. You can withdraw freely!")
+        return
+
+    wager_since = data[uid].get('wager_since_promo', 0)
+    total_wagered = data[uid]['stats'].get('total_wagered', 0)
+    wagered_amount = total_wagered - wager_since
+    remaining = wager_req - wagered_amount
+    progress = min(100, (wagered_amount / wager_req) * 100) if wager_req > 0 else 100
+
+    bar_filled = int(progress // 5)
+    bar = "█" * bar_filled + "░" * (20 - bar_filled)
+
+    embed = discord.Embed(
+        title="🔒  Wager Requirement Status",
+        color=0xFFD700 if remaining > 0 else 0x00FF88
+    )
+    embed.add_field(name="Requirement", value=f"R${wager_req:,}", inline=True)
+    embed.add_field(name="Wagered", value=f"R${wagered_amount:,}", inline=True)
+    embed.add_field(name="Remaining", value=f"R${remaining:,}", inline=True)
+    embed.add_field(name="Progress", value=f"`{bar}` {progress:.1f}%", inline=False)
+
+    if remaining <= 0:
+        embed.description = "🎉 **Complete!** You can now withdraw."
+        embed.color = 0x00FF88
+    else:
+        embed.description = "Play games to meet the requirement before withdrawing."
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name='clearwager')
+@commands.has_permissions(administrator=True)
+async def clearwager(ctx, member: discord.Member):
+    data, uid = get_user(member.id)
+    old_req = data[uid].get('wager_requirement', 0)
+    data[uid]['wager_requirement'] = 0
+    data[uid]['wager_since_promo'] = 0
+    save_data(data)
+    embed = discord.Embed(
+        title="🔓  Wager Requirement Cleared",
+        description=f"Cleared wager requirement for {member.mention}\n**Previous:** R${old_req:,}",
+        color=0x00FF88
+    )
+    await ctx.send(embed=embed)
+
+
+@clearwager.error
+async def clearwager_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("🚫 Administrator permission required!")
+    elif isinstance(error, commands.MemberNotFound):
+        await ctx.send("❌ Member not found — mention them with @")
+    else:
+        await ctx.send("❌ Usage: `.clearwager @user`")
+
+
+@bot.command(name='wagerstatus')
+@commands.has_permissions(administrator=True)
+async def wagerstatus_admin(ctx, member: discord.Member):
+    data, uid = get_user(member.id)
+    wager_req = data[uid].get('wager_requirement', 0)
+
+    if wager_req <= 0:
+        await ctx.send(f"✅ **{member.name}** has no active wager requirements.")
+        return
+
+    wager_since = data[uid].get('wager_since_promo', 0)
+    total_wagered = data[uid]['stats'].get('total_wagered', 0)
+    wagered_amount = total_wagered - wager_since
+    remaining = wager_req - wagered_amount
+    progress = min(100, (wagered_amount / wager_req) * 100) if wager_req > 0 else 100
+
+    bar_filled = int(progress // 5)
+    bar = "█" * bar_filled + "░" * (20 - bar_filled)
+
+    embed = discord.Embed(
+        title=f"🔒  Wager Status — {member.name}",
+        color=0xFFD700
+    )
+    embed.add_field(name="Requirement", value=f"R${wager_req:,}", inline=True)
+    embed.add_field(name="Wagered", value=f"R${wagered_amount:,}", inline=True)
+    embed.add_field(name="Remaining", value=f"R${remaining:,}", inline=True)
+    embed.add_field(name="Progress", value=f"`{bar}` {progress:.1f}%", inline=False)
+
+    await ctx.send(embed=embed)
+
+
+@wagerstatus_admin.error
+async def wagerstatus_admin_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("🚫 Administrator permission required!")
+    elif isinstance(error, commands.MemberNotFound):
+        await ctx.send("❌ Member not found — mention them with @")
+    else:
+        await ctx.send("❌ Usage: `.wagerstatus @user`")
+
 
 @updwithdraw.error
 async def updwithdraw_error(ctx, error):
@@ -1974,6 +2208,25 @@ async def code_cmd(ctx, code_input: str = None):
     if uses_used >= c['max_uses']:
         await ctx.send(f"❌ Code **{code_input}** has run out of uses."); return
 
+    # Requirement check
+    req_deposited = c.get('require_deposited', 0)
+    req_wagered = c.get('require_wagered', 0)
+    data, uid = get_user(ctx.author.id)
+    user_deposited = data[uid].get('total_deposited', 0.0)
+    user_wagered = data[uid]['stats'].get('total_wagered', 0)
+
+    if req_deposited > 0 or req_wagered > 0:
+        meets_deposited = req_deposited > 0 and user_deposited >= req_deposited
+        meets_wagered = req_wagered > 0 and user_wagered >= req_wagered
+        if not (meets_deposited or meets_wagered):
+            req_parts = []
+            if req_deposited > 0: req_parts.append(f"${req_deposited} deposited (you: ${user_deposited:.2f})")
+            if req_wagered > 0: req_parts.append(f"R${req_wagered:,} wagered (you: R${user_wagered:,})")
+            await ctx.send(
+                f"❌ **Requirement not met!**\n"
+                f"This code requires: {' OR '.join(req_parts)}"
+            ); return
+
     # Redeem
     c['used_by'].append(ctx.author.id)
     save_codes(codes)
@@ -1999,25 +2252,61 @@ async def code_cmd(ctx, code_input: str = None):
 
 @bot.command(name='addcode')
 @commands.has_permissions(administrator=True)
-async def addcode(ctx, code: str = None, reward: int = None, uses: int = None, days: int = None):
+async def addcode(ctx, code: str = None, reward: int = None, uses: int = None, days: int = None, requirement: str = None):
     if not all([code, reward, uses, days]):
-        await ctx.send("❌ Usage: `.addcode <CODE> <reward> <uses> <days>`"); return
+        await ctx.send(
+            "❌ Usage: `.addcode <CODE> <reward> <uses> <days> [requirement]`\n"
+            "Requirements: `deposited:<amt>` or `wagered:<amt>`\n"
+            "Example: `.addcode BONUS100 100 10 7 deposited:1`"
+        ); return
+
     code = code.upper().strip()
     codes = get_codes()
+
+    req_deposited = 0
+    req_wagered = 0
+    if requirement:
+        req = requirement.lower().strip()
+        if req.startswith('deposited:'):
+            try: req_deposited = float(req.split(':')[1])
+            except: req_deposited = 0
+        elif req.startswith('wagered:'):
+            try: req_wagered = int(req.split(':')[1])
+            except: req_wagered = 0
+
     expires = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
-    codes[code] = {'reward': reward, 'max_uses': uses, 'expires_at': expires, 'used_by': []}
+    codes[code] = {
+        'reward': reward,
+        'max_uses': uses,
+        'expires_at': expires,
+        'used_by': [],
+        'require_deposited': req_deposited,
+        'require_wagered': req_wagered
+    }
     save_codes(codes)
+
     embed = discord.Embed(title="✅ Code Created", color=0x00FF88)
-    embed.add_field(name="Code",    value=f"`{code}`",        inline=True)
-    embed.add_field(name="Reward",  value=f"R${reward:,}",   inline=True)
-    embed.add_field(name="Uses",    value=str(uses),          inline=True)
+    embed.add_field(name="Code", value=f"`{code}`", inline=True)
+    embed.add_field(name="Reward", value=f"R${reward:,}", inline=True)
+    embed.add_field(name="Uses", value=str(uses), inline=True)
     embed.add_field(name="Expires", value=f"in {days} day(s)", inline=True)
+
+    req_parts = []
+    if req_deposited > 0: req_parts.append(f"${req_deposited} deposited")
+    if req_wagered > 0: req_parts.append(f"R${req_wagered:,} wagered")
+    if req_parts:
+        embed.add_field(name="Requirement", value=" or ".join(req_parts), inline=False)
+
     await ctx.send(embed=embed)
+
 
 @addcode.error
 async def addcode_error(ctx, error):
     if isinstance(error, commands.MissingPermissions): await ctx.send("🚫 Administrator permission required!")
-    else: await ctx.send("❌ Usage: `.addcode <CODE> <reward> <uses> <days>`")
+    else: await ctx.send(
+        "❌ Usage: `.addcode <CODE> <reward> <uses> <days> [requirement]`\n"
+        "Requirements: `deposited:<amt>` or `wagered:<amt>`"
+    )
 
 
 @bot.command(name='delcode')
@@ -3202,6 +3491,22 @@ async def withdraw(ctx, amount: int = None, ltc_address: str = None):
         )
         return
 
+    data, uid = get_user(ctx.author.id)
+    wager_req = data[uid].get('wager_requirement', 0)
+    if wager_req > 0:
+        wager_since = data[uid].get('wager_since_promo', 0)
+        total_wagered = data[uid]['stats'].get('total_wagered', 0)
+        wagered_amount = total_wagered - wager_since
+        remaining = wager_req - wagered_amount
+        if remaining > 0:
+            await ctx.send(
+                f"🔒 **Wager Requirement Active!**\n"
+                f"You have a promo wager requirement of **R${wager_req:,}**.\n"
+                f"You've wagered **R${wagered_amount:,}** so far.\n"
+                f"**Remaining:** R${remaining:,} before you can withdraw."
+            )
+            return
+
     usd_value = amount * POINTS_TO_USD
 
     embed = discord.Embed(
@@ -3284,6 +3589,7 @@ async def help_command(ctx):
         "`.games` — List every game in the bot\n"
         "`.deposit <usd>` — Get a unique LTC address (DM) to top up points\n"
         "`.balance` / `.bal` — Your balance\n"
+        "`.wager` — Check your wager requirement status\n"
         "`.stats [@user]` — Full profile & lifetime stats\n"
         "`.rank` — Full rank progress\n"
         "`.leaderboard` / `.lb` — Top 10 players\n"
@@ -3292,7 +3598,11 @@ async def help_command(ctx):
     embed.add_field(name="🛡️ Admin", value=(
         "`.addbal @user <amt>` — Add balance\n"
         "`.removebal @user <amt>` — Remove balance\n"
+        "`.promo @user <amt>` — Give points with wager requirement (1x-20x)\n"
+        "`.clearwager @user` — Clear wager requirement for user\n"
+        "`.wagerstatus @user` — Check user's wager requirement progress\n"
         "`.updwithdraw @user <amt>` — Add to withdraw total\n"
+        "`.updatedeposit @user <usd>` — Add to user's deposit total\n"
         "`.resetstats` — Reset all players' stats\n"
         "`.setrank <rank> @role` — Link rank to a role\n"
         "`.rankroles` — View current rank→role config\n"
@@ -3300,7 +3610,7 @@ async def help_command(ctx):
         "`.clearhistory` — Disable bet history logging\n"
         "`.setdepositlog #channel` — Log every confirmed deposit there\n"
         "`.cleardepositlog` — Disable deposit logging\n"
-        "`.addcode <CODE> <pts> <uses> <days>` — Create promo code\n"
+        "`.addcode <CODE> <pts> <uses> <days> [req]` — Create code\n"
         "`.delcode <CODE>` — Delete a code\n"
         "`.codes` — List all active codes"
     ), inline=False)
