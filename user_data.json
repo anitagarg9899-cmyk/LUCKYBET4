@@ -1,0 +1,516 @@
+{
+    "1226180575598088345": {
+        "balance": 1000,
+        "stats": {
+            "wins": 32,
+            "losses": 36,
+            "total_wagered": 68405822390609778019350270,
+            "total_lost": 68155022232614076996567191
+        },
+        "last_daily": "2026-06-19T16:13:29.087601+00:00",
+        "last_monthly": "2026-06",
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 1.7443038254545462e+16,
+        "clan": "Owners",
+        "bonus_received": 136310027022190111932347,
+        "tips_sent": 101330,
+        "tips_received": 10053,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-19",
+        "total_invites": 0
+    },
+    "1465814583036874855": {
+        "balance": 305,
+        "stats": {
+            "wins": 2,
+            "losses": 0,
+            "total_wagered": 200,
+            "total_lost": 0
+        },
+        "last_daily": "2026-06-19T17:02:59.480365+00:00",
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.0,
+        "clan": null,
+        "bonus_received": 5,
+        "tips_sent": 0,
+        "tips_received": 0,
+        "total_withdrawn": 10000,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-15",
+        "total_invites": 0
+    },
+    "1468419138341834897": {
+        "balance": 0,
+        "stats": {
+            "wins": 2,
+            "losses": 1,
+            "total_wagered": 85,
+            "total_lost": 50
+        },
+        "last_daily": "2026-06-09T14:07:05.219177+00:00",
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.1,
+        "clan": null,
+        "bonus_received": 5,
+        "tips_sent": 0,
+        "tips_received": 101,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-17",
+        "total_invites": 0
+    },
+    "1239229343054561280": {
+        "balance": 0,
+        "stats": {
+            "wins": 0,
+            "losses": 3,
+            "total_wagered": 10000050,
+            "total_lost": 10000050
+        },
+        "last_daily": "2026-06-09T14:21:50.148060+00:00",
+        "last_monthly": "2026-06",
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 20000.100000000002,
+        "clan": null,
+        "bonus_received": 7,
+        "tips_sent": 0,
+        "tips_received": 101200,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-12",
+        "total_invites": 0
+    },
+    "config": {
+        "rank_roles": {
+            "bronze": "1513397916314632262",
+            "silver": "1513397276809236502",
+            "gold": "1513397334040379462",
+            "platinum": "1514146933441171586",
+            "diamond": "1513397437698412564",
+            "vip": "1514147044472787065"
+        },
+        "stats": {
+            "wins": 0,
+            "losses": 0,
+            "total_wagered": 0,
+            "total_lost": 0
+        },
+        "rakeback_available": 0.0,
+        "wager_at_last_monthly": 0
+    },
+    "1513780381596389417": {
+        "balance": 0,
+        "stats": {
+            "wins": 0,
+            "losses": 0,
+            "total_wagered": 0,
+            "total_lost": 0
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.0,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 0,
+        "tips_received": 2,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": null,
+        "total_invites": 0
+    },
+    "__config__": {
+        "history_channel": "1513082794799005797",
+        "rank_roles": {
+            "bronze": "1513397916314632262",
+            "silver": "1513397276809236502",
+            "gold": "1513397334040379462",
+            "platinum": "1514146933441171586",
+            "diamond": "1513397437698412564",
+            "vip": "1514147044472787065"
+        }
+    },
+    "__codes__": {
+        "DAY1": {
+            "reward": 10,
+            "max_uses": 10,
+            "expires_at": "2026-06-13T06:09:37.092787+00:00",
+            "used_by": [
+                1226180575598088345,
+                1239229343054561280
+            ]
+        },
+        "30MEMBERS": {
+            "reward": 30,
+            "max_uses": 5,
+            "expires_at": "2026-06-18T10:15:45.432914+00:00",
+            "used_by": [
+                1465769576573964454,
+                936857651848048700,
+                1311238073941753856,
+                956019560597848065,
+                1486979156574208001
+            ]
+        }
+    },
+    "1486404670552539320": {
+        "balance": 66,
+        "stats": {
+            "wins": 1,
+            "losses": 0,
+            "total_wagered": 10,
+            "total_lost": 0
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.0,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 3,
+        "tips_received": 26,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-15",
+        "total_invites": 0
+    },
+    "1346904686627655752": {
+        "balance": 20,
+        "stats": {
+            "wins": 0,
+            "losses": 0,
+            "total_wagered": 0,
+            "total_lost": 0
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.0,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 0,
+        "tips_received": 0,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": null,
+        "total_invites": 0
+    },
+    "1456921271911846062": {
+        "balance": 0,
+        "stats": {
+            "wins": 0,
+            "losses": 0,
+            "total_wagered": 0,
+            "total_lost": 0
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.0,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 0,
+        "tips_received": 0,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-15",
+        "total_invites": 0
+    },
+    "1213489405952528384": {
+        "balance": 7,
+        "stats": {
+            "wins": 0,
+            "losses": 0,
+            "total_wagered": 0,
+            "total_lost": 0
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.0,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 0,
+        "tips_received": 0,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-16",
+        "total_invites": 0
+    },
+    "885000625497198662": {
+        "balance": 0,
+        "stats": {
+            "wins": 0,
+            "losses": 0,
+            "total_wagered": 0,
+            "total_lost": 0
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.0,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 0,
+        "tips_received": 0,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-16",
+        "total_invites": 0
+    },
+    "1486979156574208001": {
+        "balance": 0,
+        "stats": {
+            "wins": 4,
+            "losses": 17,
+            "total_wagered": 515,
+            "total_lost": 393
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.7860000000000003,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 10050,
+        "tips_received": 0,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-18",
+        "total_invites": 0
+    },
+    "1303778725401329755": {
+        "balance": 169,
+        "stats": {
+            "wins": 5,
+            "losses": 1,
+            "total_wagered": 120,
+            "total_lost": 20
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.04,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 0,
+        "tips_received": 0,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": null,
+        "total_invites": 0
+    },
+    "1493099310282182817": {
+        "balance": 100,
+        "stats": {
+            "wins": 4,
+            "losses": 6,
+            "total_wagered": 371,
+            "total_lost": 265
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.53,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 0,
+        "tips_received": 0,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": null,
+        "total_invites": 0
+    },
+    "1465769576573964454": {
+        "balance": 0,
+        "stats": {
+            "wins": 23,
+            "losses": 32,
+            "total_wagered": 3415,
+            "total_lost": 2212
+        },
+        "last_daily": "2026-06-20T02:52:18.721384+00:00",
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 4.423999999999996,
+        "clan": null,
+        "bonus_received": 5,
+        "tips_sent": 0,
+        "tips_received": 35,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-19",
+        "total_invites": 0
+    },
+    "936857651848048700": {
+        "balance": 0,
+        "stats": {
+            "wins": 0,
+            "losses": 0,
+            "total_wagered": 0,
+            "total_lost": 0
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.0,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 30,
+        "tips_received": 0,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": null,
+        "total_invites": 0
+    },
+    "956019560597848065": {
+        "balance": 0,
+        "stats": {
+            "wins": 7,
+            "losses": 5,
+            "total_wagered": 248,
+            "total_lost": 119
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.23800000000000002,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 55,
+        "tips_received": 100,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-17",
+        "total_invites": 0
+    },
+    "1311238073941753856": {
+        "balance": 0,
+        "stats": {
+            "wins": 15,
+            "losses": 6,
+            "total_wagered": 2170,
+            "total_lost": 720
+        },
+        "last_daily": "2026-06-20T16:14:09.833711+00:00",
+        "last_monthly": "2026-06",
+        "wager_at_last_monthly": 2162,
+        "rakeback_available": 0.43999999999999995,
+        "clan": null,
+        "bonus_received": 8,
+        "tips_sent": 100,
+        "tips_received": 50,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": null,
+        "total_invites": 0
+    },
+    "1507665643715956757": {
+        "balance": 0,
+        "stats": {
+            "wins": 6,
+            "losses": 12,
+            "total_wagered": 51207,
+            "total_lost": 21837
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 2.6740000000000017,
+        "clan": null,
+        "bonus_received": 41,
+        "tips_sent": 0,
+        "tips_received": 1,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": null,
+        "total_invites": 0
+    },
+    "1403368319536595075": {
+        "balance": 0,
+        "stats": {
+            "wins": 11,
+            "losses": 3,
+            "total_wagered": 2346,
+            "total_lost": 937
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 1.8739999999999999,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 0,
+        "tips_received": 0,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": "2026-06-18",
+        "total_invites": 0
+    },
+    "1415328070491176971": {
+        "balance": 0,
+        "stats": {
+            "wins": 18,
+            "losses": 18,
+            "total_wagered": 2421,
+            "total_lost": 1583
+        },
+        "last_daily": "2026-06-20T01:10:13.955476+00:00",
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 3.1659999999999995,
+        "clan": null,
+        "bonus_received": 5,
+        "tips_sent": 0,
+        "tips_received": 0,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": null,
+        "total_invites": 0
+    },
+    "1244596941141053536": {
+        "balance": 25,
+        "stats": {
+            "wins": 0,
+            "losses": 0,
+            "total_wagered": 0,
+            "total_lost": 0
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.0,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 0,
+        "tips_received": 0,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": null,
+        "total_invites": 0
+    },
+    "1478580122918326424": {
+        "balance": 25,
+        "stats": {
+            "wins": 0,
+            "losses": 0,
+            "total_wagered": 0,
+            "total_lost": 0
+        },
+        "last_daily": null,
+        "last_monthly": null,
+        "wager_at_last_monthly": 0,
+        "rakeback_available": 0.0,
+        "clan": null,
+        "bonus_received": 0,
+        "tips_sent": 0,
+        "tips_received": 0,
+        "total_withdrawn": 0,
+        "daily_invites": 0,
+        "daily_invites_date": null,
+        "total_invites": 0
+    }
+}
