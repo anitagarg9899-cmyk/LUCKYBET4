@@ -36,20 +36,29 @@ bot = commands.Bot(command_prefix='.', intents=intents, help_command=None)
 DB_FILE      = os.getenv('DATA_FILE', 'user_data.json')
 active_mines = {}
 active_bj    = {}
-invite_cache = {}   # guild_id -> {code: uses}
+invite_cache = {}   # guild_id -> {code: {'uses': int, 'inviter_id': int|None, 'max_uses': int}}
 
 POINTS_TO_USD = 0.0037
 
 # ── Deposits (NOWPayments) ──────────────────────────────────────────────────
-NOWPAYMENTS_API_KEY = os.getenv('NOWPAYMENTS_API_KEY', '')
+NOWPAYMENTS_API_KEY      = os.getenv('NOWPAYMENTS_API_KEY', '')
+NOWPAYMENTS_EMAIL        = os.getenv('NOWPAYMENTS_EMAIL', '')
+NOWPAYMENTS_PASSWORD     = os.getenv('NOWPAYMENTS_PASSWORD', '')
+# TOTP secret from NOWPayments 2FA setup (the base32 key shown when you enabled 2FA).
+NOWPAYMENTS_2FA_SECRET   = os.getenv('NOWPAYMENTS_2FA_SECRET', '')
 NOWPAYMENTS_API     = 'https://api.nowpayments.io/v1'
 DEPOSIT_PAY_CURRENCY = 'ltc'
 DEPOSIT_MIN_USD      = 1.0
 # NOWPayments statuses that mean money fully arrived
 DEPOSIT_PAID_STATES  = {'finished', 'confirmed', 'sending'}
 DEPOSIT_DEAD_STATES  = {'failed', 'refunded', 'expired'}
+PAYOUT_DONE_STATES   = {'finished'}
+PAYOUT_DEAD_STATES   = {'failed', 'rejected', 'expired'}
 WITHDRAW_CHANNEL_ID = 1517385238488023061
 MIN_WITHDRAW = 500
+WITHDRAW_PAY_CURRENCY = 'ltc'
+# Keep at least this many points of bankroll buffer after a withdrawal
+HOUSE_MIN_BUFFER_PTS = 0
 
 def usd_to_points(usd):
     return int(round(usd / POINTS_TO_USD))
@@ -170,6 +179,33 @@ def get_deposits():
 
 def save_deposits(deposits):
     data = load_data(); data['__deposits__'] = deposits; save_data(data)
+
+def get_withdrawals():
+    return load_data().get('__withdrawals__', {})
+
+def save_withdrawals(w):
+    data = load_data(); data['__withdrawals__'] = w; save_data(data)
+
+# Re-entrant guard for the JWT cache used by NOWPayments payouts
+_NP_JWT = {'token': None, 'expires_at': 0.0}
+
+def compute_house_bankroll_pts():
+    """House profit in points = deposited − withdrawn − player balances − rakeback owed."""
+    data = load_data()
+    player_balances = 0
+    deposited_usd = 0.0
+    withdrawn_pts = 0
+    rakeback_owed = 0.0
+    for uid, user in data.items():
+        if uid.startswith("__") or not isinstance(user, dict):
+            continue
+        player_balances += int(user.get("balance", 0) or 0)
+        deposited_usd  += float(user.get("total_deposited", 0) or 0)
+        withdrawn_pts  += int(user.get("total_withdrawn", 0) or 0)
+        rakeback_owed  += float(user.get("rakeback_available", 0) or 0)
+    deposited_pts = usd_to_points(deposited_usd)
+    return deposited_pts - withdrawn_pts - player_balances - int(round(rakeback_owed))
+
 
 def send_image(buf, filename='result.png'):
     buf.seek(0); return discord.File(buf, filename=filename)
@@ -572,6 +608,7 @@ def cs(cards):
 
 def bj_embed(player_cards, dealer_cards, bet, show_dealer=False,
              title="🃏  Blackjack", color=0x1E90FF, extra=""):
+    """Text-only fallback embed (kept for any old callers)."""
     pv = cv(player_cards); dv = cv(dealer_cards)
     desc = (
         f"**Your hand:** {cs(player_cards)}  —  **{pv}**\n"
@@ -580,6 +617,19 @@ def bj_embed(player_cards, dealer_cards, bet, show_dealer=False,
     )
     if extra: desc += f"\n\n{extra}"
     return discord.Embed(title=title, description=desc, color=color)
+
+
+def bj_card_payload(username, pc, dc, bet, hide_hole, status, color, title, extra=""):
+    """Build (embed, file) using the image card."""
+    pv = cv(pc); dv = cv(dc)
+    buf = blackjack_card(username, pc, pv, dc, dv, won=(status in ('win', 'blackjack')),
+                         hide_hole=hide_hole, status=status)
+    file = discord.File(buf, filename="bj.png")
+    desc = f"**Bet:** R${bet:,}"
+    if extra: desc += f"\n\n{extra}"
+    embed = discord.Embed(title=title, description=desc, color=color)
+    embed.set_image(url="attachment://bj.png")
+    return embed, file
 
 
 class BlackjackView(discord.ui.View):
@@ -602,14 +652,27 @@ class BlackjackView(discord.ui.View):
         for item in self.children:
             if getattr(item, 'custom_id', None) == 'bj_double': item.disabled = True
 
+    async def _edit(self, interaction, hide_hole, status, color, title, extra="", view=None):
+        embed, file = bj_card_payload(self.user_name, self.player_cards, self.dealer_cards,
+                                      self.bet, hide_hole, status, color, title, extra)
+        kwargs = {'embed': embed, 'attachments': [file]}
+        if view is not None: kwargs['view'] = view
+        if interaction.response.is_done():
+            await interaction.message.edit(**kwargs)
+        else:
+            await interaction.response.edit_message(**kwargs)
+
     async def hit_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Not your game!", ephemeral=True); return
         if self.game_over: return
         self.first_action = False; self._disable_double()
         self.player_cards.append(self.deck.pop())
-        if cv(self.player_cards) > 21: await self._finish(interaction, bust=True)
-        else: await interaction.response.edit_message(embed=bj_embed(self.player_cards, self.dealer_cards, self.bet), view=self)
+        if cv(self.player_cards) > 21:
+            await self._finish(interaction, bust=True)
+        else:
+            await self._edit(interaction, hide_hole=True, status='playing',
+                             color=0x1E90FF, title="🃏  Blackjack — Hit!", view=self)
 
     async def stand_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
@@ -630,14 +693,26 @@ class BlackjackView(discord.ui.View):
 
     async def _finish(self, interaction, bust=False):
         self.game_over = True; self._disable_all(); self.stop(); active_bj.pop(self.user_id, None)
+
+        # 1) Reveal hole card first
+        await self._edit(interaction, hide_hole=False, status='playing',
+                         color=0xFFD700, title="🃏  Blackjack — Dealer reveals…", view=self)
+
+        # 2) Dealer draws one card at a time (animated) unless player busted
         if not bust:
-            while cv(self.dealer_cards) < 17: self.dealer_cards.append(self.deck.pop())
+            while cv(self.dealer_cards) < 17:
+                await asyncio.sleep(0.9)
+                self.dealer_cards.append(self.deck.pop())
+                await self._edit(interaction, hide_hole=False, status='playing',
+                                 color=0xFFD700, title="🃏  Blackjack — Dealer draws…", view=self)
+
         pv = cv(self.player_cards); dv = cv(self.dealer_cards)
-        if bust or pv > 21:   won = False; result = "Bust! You went over 21."
-        elif dv > 21:         won = True;  result = "Dealer busts! You win!"
-        elif pv > dv:         won = True;  result = "Higher hand — You win!"
-        elif pv < dv:         won = False; result = "Dealer wins."
-        else:                 won = None;  result = "Push — it's a tie."
+        if bust or pv > 21:   won = False; result = "Bust! You went over 21."; status = 'bust'
+        elif dv > 21:         won = True;  result = "Dealer busts! You win!"; status = 'win'
+        elif pv > dv:         won = True;  result = "Higher hand — You win!"; status = 'win'
+        elif pv < dv:         won = False; result = "Dealer wins.";            status = 'lose'
+        else:                 won = None;  result = "Push — it's a tie.";       status = 'push'
+
         if won is True:
             new_bal = self.start_balance + self.bet; add_to_stats(self.user_id, True, self.bet)
             set_user_balance(self.user_id, new_bal); color = 0x00FF88
@@ -650,10 +725,11 @@ class BlackjackView(discord.ui.View):
         else:
             new_bal = self.start_balance; color = 0xFFD700
             extra = f"🤝 **{result}**\nNo change  |  Balance: {fmt(new_bal)}"
+
+        await asyncio.sleep(0.5)
         title = "🃏  Blackjack — " + ("WIN!" if won is True else ("LOSS" if won is False else "TIE"))
-        embed = bj_embed(self.player_cards, self.dealer_cards, self.bet, show_dealer=True,
-                         title=title, color=color, extra=extra)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self._edit(interaction, hide_hole=False, status=status,
+                         color=color, title=title, extra=extra, view=self)
         profit = self.bet if won is True else (-self.bet if won is False else 0)
         asyncio.create_task(send_to_history(interaction.guild, 'blackjack', self.user_name, self.user_id, self.bet, won, profit, new_bal))
 
@@ -775,12 +851,19 @@ class MinesView(discord.ui.View):
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
+def _snap_invite(inv):
+    return {
+        'uses': inv.uses or 0,
+        'inviter_id': inv.inviter.id if inv.inviter else None,
+        'max_uses': inv.max_uses or 0,
+    }
+
 @bot.event
 async def on_ready():
     for guild in bot.guilds:
         try:
             invites = await guild.fetch_invites()
-            invite_cache[guild.id] = {inv.code: inv.uses for inv in invites}
+            invite_cache[guild.id] = {inv.code: _snap_invite(inv) for inv in invites}
         except Exception:
             pass
     # Seed DAY1 promo code if it doesn't exist yet
@@ -796,32 +879,69 @@ async def on_ready():
     if NOWPAYMENTS_API_KEY and not getattr(bot, '_deposit_watcher_started', False):
         bot._deposit_watcher_started = True
         bot.loop.create_task(deposit_watcher())
+    if NOWPAYMENTS_API_KEY and NOWPAYMENTS_EMAIL and NOWPAYMENTS_PASSWORD \
+            and not getattr(bot, '_payout_watcher_started', False):
+        bot._payout_watcher_started = True
+        bot.loop.create_task(payout_watcher())
+    if not getattr(bot, '_hourly_rain_started', False):
+        bot._hourly_rain_started = True
+        bot.loop.create_task(_hourly_rain_loop())
     print(f'{bot.user} has connected to Discord!')
     print('------')
 
 @bot.event
 async def on_invite_create(invite):
     guild_id = invite.guild.id
-    if guild_id not in invite_cache:
-        invite_cache[guild_id] = {}
-    invite_cache[guild_id][invite.code] = invite.uses
+    invite_cache.setdefault(guild_id, {})[invite.code] = _snap_invite(invite)
+
+@bot.event
+async def on_invite_delete(invite):
+    # Keep the cached entry around so on_member_join can still credit
+    # single-use / max-uses invites that Discord deletes the moment
+    # they're consumed. We only drop it once the join is processed.
+    pass
 
 @bot.event
 async def on_member_join(member):
+    if member.bot:
+        return
     guild = member.guild
     try:
         new_invites = await guild.fetch_invites()
     except Exception:
-        return
+        new_invites = []
     old = invite_cache.get(guild.id, {})
+    new_map = {inv.code: _snap_invite(inv) for inv in new_invites}
+
     inviter_id = None
-    for inv in new_invites:
-        old_uses = old.get(inv.code, 0)
-        if inv.uses > old_uses:
-            inviter_id = inv.inviter.id if inv.inviter else None
+    consumed_code = None
+
+    # Case 1: an existing invite's use count went up.
+    for code, snap in new_map.items():
+        prev = old.get(code)
+        prev_uses = prev['uses'] if prev else 0
+        if snap['uses'] > prev_uses:
+            inviter_id = snap['inviter_id'] or (prev['inviter_id'] if prev else None)
+            consumed_code = code
             break
-    invite_cache[guild.id] = {inv.code: inv.uses for inv in new_invites}
-    if not inviter_id:
+
+    # Case 2: an invite vanished (single-use / hit max_uses) — credit cached inviter.
+    if inviter_id is None:
+        for code, prev in old.items():
+            if code not in new_map:
+                inviter_id = prev.get('inviter_id')
+                consumed_code = code
+                break
+
+    # Refresh cache: keep cached entries that Discord deleted *except*
+    # the one we just consumed, so we don't double-credit later joins.
+    merged = dict(old)
+    merged.update(new_map)
+    if consumed_code and consumed_code not in new_map:
+        merged.pop(consumed_code, None)
+    invite_cache[guild.id] = merged
+
+    if not inviter_id or inviter_id == member.id:
         return
     today = datetime.now(timezone.utc).date().isoformat()
     data, uid = get_user(inviter_id)
@@ -2057,22 +2177,36 @@ async def blackjack_cmd(ctx, amount: str):
     server_seed, client_seed, public_hash = generate_seeds()
     deck = pf_blackjack_deck(server_seed, client_seed)
     pc = [deck.pop(), deck.pop()]; dc = [deck.pop(), deck.pop()]; pv = cv(pc)
+
+    # Natural blackjack — instant win, animated reveal
     if pv == 21:
         winnings = round(amount * 2.5); new_bal = bal + winnings - amount
         add_to_stats(ctx.author.id, True, amount); set_user_balance(ctx.author.id, new_bal)
         if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
-        embed = discord.Embed(title="🃏  Blackjack — BLACKJACK! (×2.5)", color=0x00FF88)
-        embed.add_field(name="Your hand", value=f"{cs(pc)} ({pv})", inline=False)
-        embed.add_field(name="Won", value=fmt(winnings), inline=True)
-        embed.add_field(name="New Balance", value=fmt(new_bal), inline=True)
-        pf_add_field(embed, server_seed, client_seed, public_hash, "blackjack")
+        # Step 1: show with hole hidden
+        embed1, file1 = bj_card_payload(ctx.author.name, pc, dc, amount,
+                                        hide_hole=True, status='playing',
+                                        color=0x1E90FF, title="🃏  Blackjack — Dealing…")
+        msg = await ctx.send(embed=embed1, file=file1)
+        await asyncio.sleep(0.9)
+        # Step 2: reveal + BLACKJACK banner
+        embed2, file2 = bj_card_payload(ctx.author.name, pc, dc, amount,
+                                        hide_hole=False, status='blackjack',
+                                        color=0x00FF88,
+                                        title="🃏  Blackjack — BLACKJACK! (×2.5)",
+                                        extra=f"+R${winnings:,}  |  New Balance: {fmt(new_bal)}")
+        pf_add_field(embed2, server_seed, client_seed, public_hash, "blackjack")
+        await msg.edit(embed=embed2, attachments=[file2])
         asyncio.create_task(send_to_history(ctx.guild, 'blackjack', ctx.author.name, ctx.author.id, amount, True, winnings, new_bal))
-        await ctx.send(embed=embed); return
+        return
+
     active_bj[ctx.author.id] = True
     view = BlackjackView(ctx.author.id, ctx.author.name, amount, bal, pc, dc, deck)
-    embed = bj_embed(pc, dc, amount)
+    embed, file = bj_card_payload(ctx.author.name, pc, dc, amount,
+                                  hide_hole=True, status='playing',
+                                  color=0x1E90FF, title="🃏  Blackjack")
     embed.set_footer(text=f"👊 Hit  |  🛑 Stand  |  ⬆️ Double Down  |  🔐 Seed: {client_seed[:8]}… Hash: {public_hash[:12]}…")
-    await ctx.send(embed=embed, view=view)
+    await ctx.send(embed=embed, file=file, view=view)
 
 
 @bot.command(name='mines')
@@ -2480,130 +2614,103 @@ async def send_error(ctx, error):
 
 
 RAIN_DURATION = 120  # seconds
+RAIN_MIN_DEPOSIT_USD = 0.5  # lifetime deposit required to join rain
+RAIN_WAGER_MULTIPLIER = 5   # claimed rain points need 5x wager before withdrawal
 
 class RainView(discord.ui.View):
     def __init__(self, host_id, amount):
         super().__init__(timeout=RAIN_DURATION)
-        self.host_id  = host_id
+        self.host_id  = host_id  # may be None (hourly/house rain)
         self.amount   = amount
-        self.joiners  = set()  # user_ids who joined
+        self.joiners  = set()
 
     @discord.ui.button(label="🌧️ Join Rain", style=discord.ButtonStyle.primary, custom_id="rain_join")
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = interaction.user.id
-        if uid == self.host_id:
+        if self.host_id is not None and uid == self.host_id:
             await interaction.response.send_message("❌ You started the rain — you can't join it!", ephemeral=True); return
         if uid in self.joiners:
             await interaction.response.send_message("✅ You're already in the rain!", ephemeral=True); return
+
+        data, ukey = get_user(uid)
+        deposited = float(data[ukey].get('total_deposited', 0.0) or 0.0)
+        if deposited < RAIN_MIN_DEPOSIT_USD:
+            need_pts = usd_to_points(RAIN_MIN_DEPOSIT_USD)
+            await interaction.response.send_message(
+                f"❌ **Requirement not met!**\n\n"
+                f"**Requirements to join:**\n"
+                f"💸 Have a lifetime deposit of at least **${RAIN_MIN_DEPOSIT_USD}$** (~{need_pts} points)!\n\n"
+                f"Your lifetime deposit: **${deposited:.2f}**\n\n"
+                f"*(Note: Points claimed from rain have a {RAIN_WAGER_MULTIPLIER}x wager requirement before withdrawal).*",
+                ephemeral=True); return
+
         self.joiners.add(uid)
         count = len(self.joiners)
         share = self.amount // count if count else self.amount
         await interaction.response.send_message(
             f"🌧️ You joined the rain! **{count}** player{'s' if count != 1 else ''} in so far — "
-            f"current share: **R${share:,}** each.", ephemeral=True)
-
-    async def on_timeout(self):
-        pass  # handled in the command task
-
-
-class GiveawayView(discord.ui.View):
-    def __init__(self, host_id, amount, duration, req_wager, req_invites):
-        super().__init__(timeout=duration)
-        self.host_id     = host_id
-        self.amount      = amount
-        self.req_wager   = req_wager
-        self.req_invites = req_invites
-        self.entrants    = set()
-
-    @discord.ui.button(label='🎉 Enter Giveaway', style=discord.ButtonStyle.success, custom_id='giveaway_enter')
-    async def enter_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        uid = interaction.user.id
-        if uid == self.host_id:
-            await interaction.response.send_message("❌ You can't enter your own giveaway!", ephemeral=True); return
-        if uid in self.entrants:
-            await interaction.response.send_message("✅ You're already entered — good luck! 🍀", ephemeral=True); return
-
-        data, ukey = get_user(uid)
-        ud = data[ukey]
-
-        if self.req_wager > 0:
-            tw = ud['stats'].get('total_wagered', 0)
-            if tw < self.req_wager:
-                await interaction.response.send_message(
-                    f"❌ **Requirement not met!**\n"
-                    f"Need **R${self.req_wager:,}** total wagered.\n"
-                    f"Your total: **R${tw:,}**", ephemeral=True); return
-
-        if self.req_invites > 0:
-            ti = ud.get('total_invites', 0)
-            if ti < self.req_invites:
-                await interaction.response.send_message(
-                    f"❌ **Requirement not met!**\n"
-                    f"Need **{self.req_invites}** total invite{'s' if self.req_invites != 1 else ''}.\n"
-                    f"Your total: **{ti}**", ephemeral=True); return
-
-        self.entrants.add(uid)
-        count = len(self.entrants)
-        await interaction.response.send_message(
-            f"🎉 You're entered! **{count}** entr{'ies' if count != 1 else 'y'} so far. Good luck!",
+            f"current share: **R${share:,}** each.\n"
+            f"*(Note: claimed points carry a {RAIN_WAGER_MULTIPLIER}x wager requirement.)*",
             ephemeral=True)
 
     async def on_timeout(self):
-        pass  # handled in the command task
+        pass
 
 
-@bot.command(name='rain')
-async def rain(ctx, amount: str):
-    bal = get_user_balance(ctx.author.id)
-    amount = resolve_bet(amount, bal)
-    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
-    if amount <= 0: await ctx.send("❌ Amount must be positive!"); return
-    if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+def _rain_req_text():
+    return (
+        f"\n**Requirements to join:**\n"
+        f"💸 Have a lifetime deposit of at least **${RAIN_MIN_DEPOSIT_USD}$** "
+        f"(~{usd_to_points(RAIN_MIN_DEPOSIT_USD)} points)!\n\n"
+        f"*(Note: Points claimed from rain have a {RAIN_WAGER_MULTIPLIER}x wager requirement before withdrawal).*"
+    )
 
-    # Deduct immediately so the host can't spend it elsewhere
-    set_user_balance(ctx.author.id, bal - amount)
 
-    view = RainView(ctx.author.id, amount)
-
+async def _run_rain(channel, amount, host_id, host_label):
+    """Run a rain round in `channel`. host_id=None for house/hourly rains."""
+    view = RainView(host_id, amount)
+    req_text = _rain_req_text()
     embed = discord.Embed(
         title="🌧️  It's Raining Points!",
         description=(
-            f"**{ctx.author.name}** is raining **R${amount:,}**!\n\n"
+            f"**{host_label}** is raining **R${amount:,}**!\n\n"
             f"Click **Join Rain** to get your share.\n"
             f"The pot splits equally among everyone who joins.\n\n"
             f"⏳ Rain ends in **{RAIN_DURATION // 60} minutes**."
+            f"{req_text}"
         ),
         color=0x00BFFF
     )
     embed.set_footer(text=f"Pot: R${amount:,}  |  Splits equally among all joiners")
-    msg = await ctx.send(embed=embed, view=view)
+    msg = await channel.send(embed=embed, view=view)
 
-    # Countdown update at 1 min remaining
     await asyncio.sleep(RAIN_DURATION - 60)
     if not view.is_finished():
         count = len(view.joiners)
         share = amount // count if count else amount
         embed.description = (
-            f"**{ctx.author.name}** is raining **R${amount:,}**!\n\n"
+            f"**{host_label}** is raining **R${amount:,}**!\n\n"
             f"Click **Join Rain** to get your share.\n\n"
             f"⏳ **1 minute left!**  "
             f"{'**' + str(count) + ' joined** — share: R$' + f'{share:,}' if count else 'No one joined yet!'}"
+            f"{req_text}"
         )
         try: await msg.edit(embed=embed, view=view)
         except: pass
 
     await asyncio.sleep(60)
-
-    # Disable button
     for item in view.children: item.disabled = True
 
     joiners = list(view.joiners)
     if not joiners:
-        # Nobody joined — refund host
-        set_user_balance(ctx.author.id, get_user_balance(ctx.author.id) + amount)
+        if host_id is not None:
+            set_user_balance(host_id, get_user_balance(host_id) + amount)
+            refund_txt = f"**R${amount:,}** refunded to the host."
+        else:
+            refund_txt = "No payout was issued."
         embed = discord.Embed(
             title="🌧️  Rain Ended — No Takers",
-            description=f"Nobody joined the rain. **R${amount:,}** refunded to {ctx.author.mention}.",
+            description=f"Nobody joined the rain. {refund_txt}",
             color=0xFF8800
         )
         try: await msg.edit(embed=embed, view=view)
@@ -2615,30 +2722,108 @@ async def rain(ctx, amount: str):
 
     names = []
     for i, uid in enumerate(joiners):
-        payout = share + (remainder if i == 0 else 0)  # first joiner gets any leftover cent
+        payout = share + (remainder if i == 0 else 0)
         prev = get_user_balance(uid)
         set_user_balance(uid, prev + payout)
         rd, ruid = get_user(uid)
         rd[ruid]['tips_received'] = rd[ruid].get('tips_received', 0) + payout
+        rd[ruid]['wager_requirement'] = rd[ruid].get('wager_requirement', 0) + payout * RAIN_WAGER_MULTIPLIER
         save_data(rd)
         try: user = await bot.fetch_user(uid); names.append(f"**{user.name}** +R${payout:,}")
         except: names.append(f"+R${payout:,}")
 
-    sd, suid = get_user(ctx.author.id)
-    sd[suid]['tips_sent'] = sd[suid].get('tips_sent', 0) + amount
-    save_data(sd)
+    if host_id is not None:
+        sd, suid = get_user(host_id)
+        sd[suid]['tips_sent'] = sd[suid].get('tips_sent', 0) + amount
+        save_data(sd)
 
     embed = discord.Embed(
         title="🌧️  Rain Complete!",
         description=(
-            f"**{ctx.author.name}** rained **R${amount:,}** on **{len(joiners)}** player{'s' if len(joiners)!=1 else ''}!\n\n"
+            f"**{host_label}** rained **R${amount:,}** on **{len(joiners)}** player{'s' if len(joiners)!=1 else ''}!\n\n"
             + "\n".join(names)
+            + f"\n\n*(Claimed points carry a **{RAIN_WAGER_MULTIPLIER}x wager requirement** before withdrawal.)*"
         ),
         color=0x00FF88
     )
     embed.set_footer(text=f"Each player received R${share:,}")
     try: await msg.edit(embed=embed, view=view)
     except: pass
+
+
+@bot.command(name='rain')
+async def rain(ctx, amount: str = None):
+    if amount is None:
+        await ctx.send("❌ Usage: `.rain <amount>`"); return
+    bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None: await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amount <= 0: await ctx.send("❌ Amount must be positive!"); return
+    if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+
+    set_user_balance(ctx.author.id, bal - amount)
+    await _run_rain(ctx.channel, amount, ctx.author.id, ctx.author.name)
+
+
+# ============ Hourly auto-rain ============
+
+async def _hourly_rain_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            cfg = get_config()
+            hourly = cfg.get('hourly_rains', {}) or {}
+            for ch_id, amt in list(hourly.items()):
+                try:
+                    channel = bot.get_channel(int(ch_id)) or await bot.fetch_channel(int(ch_id))
+                    if channel:
+                        bot.loop.create_task(_run_rain(channel, int(amt), None, "🏠 House"))
+                except Exception as e:
+                    print(f"[hourly_rain] {ch_id}: {e}")
+        except Exception as e:
+            print(f"[hourly_rain] loop error: {e}")
+        await asyncio.sleep(3600)
+
+
+@bot.command(name='sethourlyrain')
+@commands.has_permissions(administrator=True)
+async def sethourlyrain(ctx, channel: discord.TextChannel = None, amount: str = None):
+    if channel is None or amount is None:
+        await ctx.send("❌ Usage: `.sethourlyrain #channel <amount>`  (use `0` to disable)"); return
+    try: amt = int(amount.replace(',', '').replace('_', ''))
+    except: await ctx.send("❌ Amount must be a whole number."); return
+    if amt < 0: await ctx.send("❌ Amount can't be negative."); return
+
+    cfg = get_config()
+    hourly = cfg.get('hourly_rains', {}) or {}
+    if amt == 0:
+        hourly.pop(str(channel.id), None)
+        cfg['hourly_rains'] = hourly; save_config(cfg)
+        await ctx.send(embed=discord.Embed(
+            title="🛑 Hourly Rain Disabled",
+            description=f"No more auto-rains in {channel.mention}.",
+            color=0xFF8800)); return
+
+    hourly[str(channel.id)] = amt
+    cfg['hourly_rains'] = hourly; save_config(cfg)
+    if not getattr(bot, '_hourly_rain_started', False):
+        bot._hourly_rain_started = True
+        bot.loop.create_task(_hourly_rain_loop())
+    embed = discord.Embed(
+        title="🌧️ Hourly Rain Set",
+        description=(
+            f"Every hour, **R${amt:,}** will rain in {channel.mention}.\n\n"
+            f"{_rain_req_text()}"
+        ),
+        color=0x00BFFF)
+    await ctx.send(embed=embed)
+
+
+@sethourlyrain.error
+async def sethourlyrain_error(ctx, error):
+    await ctx.send("❌ Usage: `.sethourlyrain #channel <amount>`  (use `0` to disable)")
+
+
 
 
 @bot.command(name='giveaway', aliases=['gw'])
@@ -3268,27 +3453,145 @@ async def stats_error(ctx, error):
     if isinstance(error, commands.MemberNotFound): await ctx.send("❌ Member not found — mention them with @")
     else: await ctx.send("❌ Usage: `.stats` or `.stats @user`")
 
-@bot.command(name="housebal")
+@bot.command(name="housebal", aliases=["bankroll", "house"])
 async def housebal(ctx):
-
     data = load_data()
 
-    total = 0
+    player_balances = 0
+    total_deposited_usd = 0.0
+    total_withdrawn_pts = 0
+    total_wagered = 0
+    total_lost = 0
+    total_won_count = 0
+    total_loss_count = 0
+    rakeback_outstanding = 0.0
+    active_players = 0
 
     for uid, user in data.items():
-
-        if uid.startswith("__"):
+        if uid.startswith("__") or not isinstance(user, dict):
             continue
+        bal = int(user.get("balance", 0) or 0)
+        player_balances += bal
+        total_deposited_usd += float(user.get("total_deposited", 0) or 0)
+        total_withdrawn_pts += int(user.get("total_withdrawn", 0) or 0)
+        rakeback_outstanding += float(user.get("rakeback_available", 0) or 0)
+        s = user.get("stats", {}) or {}
+        total_wagered += int(s.get("total_wagered", 0) or 0)
+        total_lost    += int(s.get("total_lost", 0) or 0)
+        total_won_count  += int(s.get("wins", 0) or 0)
+        total_loss_count += int(s.get("losses", 0) or 0)
+        if bal > 0 or s.get("total_wagered", 0):
+            active_players += 1
 
-        total += user.get("balance", 0)
+    # Bankroll math (points)
+    deposited_pts = usd_to_points(total_deposited_usd)
+    # House profit = what came in (deposits) − what's owed to players
+    # (current balances + outstanding rakeback) − what already cashed out.
+    owed_to_players = player_balances + int(round(rakeback_outstanding))
+    house_profit_pts = deposited_pts - total_withdrawn_pts - owed_to_players
+    house_profit_usd = house_profit_pts * POINTS_TO_USD
 
+    total_bets = total_won_count + total_loss_count
+    house_edge = (total_lost / total_wagered * 100.0) if total_wagered else 0.0
+
+    color = 0x00E676 if house_profit_pts >= 0 else 0xFF4444
     embed = discord.Embed(
-        title="🏦 LuckyBet House Balance",
-        description=f"Total player balances:\n\n**{total:,} points**",
-        color=0x00BFFF
+        title="🏦 LuckyBet — House Bankroll",
+        description=(
+            f"**House Profit:** `{house_profit_pts:+,}` pts  "
+            f"(≈ **${house_profit_usd:+,.2f}**)\n"
+            f"_Deposits − Withdrawals − Player Balances − Rakeback owed_"
+        ),
+        color=color,
     )
 
+    embed.add_field(
+        name="💰 Money In",
+        value=(
+            f"Deposits: **${total_deposited_usd:,.2f}**\n"
+            f"= **{deposited_pts:,}** pts"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="💸 Money Out",
+        value=(
+            f"Withdrawn: **{total_withdrawn_pts:,}** pts\n"
+            f"≈ **${total_withdrawn_pts*POINTS_TO_USD:,.2f}**"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="👥 Player Liability",
+        value=(
+            f"Balances: **{player_balances:,}** pts\n"
+            f"Rakeback owed: **{rakeback_outstanding:,.0f}** pts\n"
+            f"Active players: **{active_players:,}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🎲 Wager Stats",
+        value=(
+            f"Total wagered: **{total_wagered:,}** pts\n"
+            f"Player net loss: **{total_lost:,}** pts\n"
+            f"Bets placed: **{total_bets:,}**\n"
+            f"House edge (realised): **{house_edge:.2f}%**"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=f"1 pt ≈ ${POINTS_TO_USD:.4f} USD")
     await ctx.send(embed=embed)
+
+
+@bot.command(name="resethouse", aliases=["housereset"])
+@commands.has_permissions(administrator=True)
+async def resethouse(ctx, scope: str = "all"):
+    """Reset house bankroll stats. Scope: all | wager | withdrawn | rakeback | deposits | bets"""
+    scope = scope.lower()
+    valid = {"all", "wager", "withdrawn", "rakeback", "deposits", "bets"}
+    if scope not in valid:
+        return await ctx.send(f"❌ Scope must be one of: {', '.join(sorted(valid))}")
+
+    data = load_data()
+    touched = 0
+    for uid, ud in data.items():
+        if not isinstance(ud, dict):
+            continue
+        s = ud.setdefault('stats', {'wins': 0, 'losses': 0, 'total_wagered': 0, 'total_lost': 0})
+        if scope in ("all", "wager"):
+            s['total_wagered'] = 0
+            s['total_lost'] = 0
+            ud['wager_at_last_monthly'] = 0
+            ud['wager_since_promo'] = 0
+        if scope in ("all", "bets", "wager"):
+            s['wins'] = 0
+            s['losses'] = 0
+        if scope in ("all", "withdrawn"):
+            ud['total_withdrawn'] = 0
+        if scope in ("all", "rakeback"):
+            ud['rakeback_available'] = 0.0
+        if scope in ("all", "deposits"):
+            ud['deposited'] = 0
+        touched += 1
+    save_data(data)
+
+    embed = discord.Embed(
+        title="🧹 House Stats Reset",
+        description=f"Scope: **{scope}** • Users updated: **{touched}**",
+        color=0x00FF88,
+    )
+    await ctx.send(embed=embed)
+
+
+@resethouse.error
+async def resethouse_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Admin only.")
+
+
+
+
 
 GAMES_CATALOG = [
     ("🪙", ".coinflip / .cf <amt> <h/t>", "Coin flip, 1:1 payout"),
@@ -3470,26 +3773,108 @@ async def deposit_watcher():
             pass
         await asyncio.sleep(45)
 
+async def nowpayments_jwt():
+    """Return a cached JWT for NOWPayments payouts (refreshes ~4 min before expiry)."""
+    import time
+    if _NP_JWT['token'] and _NP_JWT['expires_at'] - time.time() > 60:
+        return _NP_JWT['token']
+    if not (NOWPAYMENTS_EMAIL and NOWPAYMENTS_PASSWORD):
+        raise RuntimeError("NOWPAYMENTS_EMAIL / NOWPAYMENTS_PASSWORD not configured")
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{NOWPAYMENTS_API}/auth",
+            json={'email': NOWPAYMENTS_EMAIL, 'password': NOWPAYMENTS_PASSWORD},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            data = await resp.json(content_type=None)
+            if resp.status != 200 or 'token' not in data:
+                raise RuntimeError(f"NOWPayments auth failed: {data}")
+            _NP_JWT['token'] = data['token']
+            _NP_JWT['expires_at'] = time.time() + 5 * 60  # NP JWT lives ~5 min
+            return _NP_JWT['token']
+
+
+def _totp_now(secret):
+    """Generate a 6-digit TOTP code from a base32 secret (RFC 6238, 30s step)."""
+    import base64, struct, hmac as _hmac, hashlib as _h, time
+    key = base64.b32decode(secret.replace(' ', '').upper() + '=' * ((8 - len(secret) % 8) % 8))
+    counter = struct.pack('>Q', int(time.time()) // 30)
+    digest = _hmac.new(key, counter, _h.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = (struct.unpack('>I', digest[offset:offset+4])[0] & 0x7FFFFFFF) % 1_000_000
+    return f"{code:06d}"
+
+
+async def create_payout(user_id, address, ltc_amount, usd_value):
+    """Create + verify a NOWPayments LTC payout. Returns (ok, payload_or_error)."""
+    if not NOWPAYMENTS_API_KEY:
+        return False, "NOWPAYMENTS_API_KEY not configured"
+    jwt = await nowpayments_jwt()
+    headers = {
+        'x-api-key': NOWPAYMENTS_API_KEY,
+        'Authorization': f'Bearer {jwt}',
+        'Content-Type': 'application/json',
+    }
+    payload = {'withdrawals': [{
+        'address': address,
+        'currency': WITHDRAW_PAY_CURRENCY,
+        'amount': float(f"{ltc_amount:.8f}"),
+        'ipn_callback_url': '',
+    }]}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{NOWPAYMENTS_API}/payout",
+                                headers=headers, json=payload,
+                                timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            data = await resp.json(content_type=None)
+            if resp.status not in (200, 201) or not isinstance(data, dict) or 'id' not in data:
+                return False, (data.get('message') if isinstance(data, dict) else str(data)) or "create failed"
+        batch_id = data['id']
+        # Verify with TOTP if 2FA is enabled on the NOWPayments account
+        if NOWPAYMENTS_2FA_SECRET:
+            code = _totp_now(NOWPAYMENTS_2FA_SECRET)
+            async with session.post(f"{NOWPAYMENTS_API}/payout/{batch_id}/verify",
+                                    headers=headers, json={'verification_code': code},
+                                    timeout=aiohttp.ClientTimeout(total=30)) as vresp:
+                vdata = await vresp.json(content_type=None)
+                if vresp.status not in (200, 201):
+                    return False, (vdata.get('message') if isinstance(vdata, dict) else str(vdata)) or "verify failed"
+        return True, {'batch_id': batch_id, 'withdrawals': data.get('withdrawals', [])}
+
+
+async def get_ltc_estimate(usd_value):
+    """Ask NOWPayments how much LTC equals usd_value. Returns float LTC."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{NOWPAYMENTS_API}/estimate",
+            params={'amount': usd_value, 'currency_from': 'usd', 'currency_to': WITHDRAW_PAY_CURRENCY},
+            headers={'x-api-key': NOWPAYMENTS_API_KEY},
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as resp:
+            data = await resp.json(content_type=None)
+            if resp.status != 200 or 'estimated_amount' not in data:
+                raise RuntimeError(f"estimate failed: {data}")
+            return float(data['estimated_amount'])
+
+
+def is_valid_ltc_address(addr):
+    if not addr or len(addr) < 26 or len(addr) > 80:
+        return False
+    # Legacy (L/M/3), SegWit P2SH (M), bech32 (ltc1...)
+    return bool(re.match(r'^(ltc1[02-9ac-hj-np-z]{6,})$|^[LM3][a-km-zA-HJ-NP-Z1-9]{25,34}$', addr))
+
+
 @bot.command(name="withdraw")
 async def withdraw(ctx, amount: int = None, ltc_address: str = None):
-
     if amount is None or ltc_address is None:
-        await ctx.send("❌ Usage: `.withdraw <points> <ltc_address>`")
-        return
-
+        await ctx.send("❌ Usage: `.withdraw <points> <ltc_address>`"); return
     if amount < MIN_WITHDRAW:
-        await ctx.send(
-            f"❌ Minimum withdrawal is **{MIN_WITHDRAW:,} points**."
-        )
-        return
+        await ctx.send(f"❌ Minimum withdrawal is **{MIN_WITHDRAW:,} points**."); return
+    if not is_valid_ltc_address(ltc_address):
+        await ctx.send("❌ That doesn't look like a valid LTC address."); return
 
     bal = get_user_balance(ctx.author.id)
-
     if bal < amount:
-        await ctx.send(
-            f"❌ You only have **{bal:,} points**."
-        )
-        return
+        await ctx.send(f"❌ You only have **{bal:,} points**."); return
 
     data, uid = get_user(ctx.author.id)
     wager_req = data[uid].get('wager_requirement', 0)
@@ -3507,120 +3892,384 @@ async def withdraw(ctx, amount: int = None, ltc_address: str = None):
             )
             return
 
-    usd_value = amount * POINTS_TO_USD
+    if not (NOWPAYMENTS_API_KEY and NOWPAYMENTS_EMAIL and NOWPAYMENTS_PASSWORD):
+        await ctx.send("❌ Auto-payouts aren't configured yet. Ask an admin to set NOWPAYMENTS_EMAIL / NOWPAYMENTS_PASSWORD."); return
 
-    embed = discord.Embed(
-        title="🏦 Withdrawal Request",
-        color=0xFFD700
-    )
+    # House bankroll safety: don't pay out if it'd drive the bankroll below the buffer.
+    house_after = compute_house_bankroll_pts() - amount
+    if house_after < HOUSE_MIN_BUFFER_PTS:
+        await ctx.send(
+            "⚠️ Withdrawal temporarily unavailable — the house bankroll is too low to cover this payout right now. "
+            "Try a smaller amount or contact an admin."
+        ); return
 
-    embed.add_field(
-        name="User",
-        value=f"{ctx.author} ({ctx.author.id})",
-        inline=False
-    )
+    usd_value = round(amount * POINTS_TO_USD, 2)
 
-    embed.add_field(
-        name="Amount",
-        value=f"{amount:,} points",
-        inline=True
-    )
+    notice = await ctx.send(f"⏳ Processing your withdrawal of **{amount:,} pts** (≈ ${usd_value:.2f})…")
 
-    embed.add_field(
-        name="USD Value",
-        value=f"${usd_value:.2f}",
-        inline=True
-    )
+    # ── ESCROW: deduct now, refund on failure ──
+    set_user_balance(ctx.author.id, bal - amount)
 
-    embed.add_field(
-        name="LTC Address",
-        value=f"```{ltc_address}```",
-        inline=False
-    )
+    try:
+        ltc_amount = await get_ltc_estimate(usd_value)
+    except Exception as e:
+        set_user_balance(ctx.author.id, get_user_balance(ctx.author.id) + amount)
+        await notice.edit(content=f"❌ Couldn't price LTC right now ({e}). Your balance was not charged."); return
 
-    channel = bot.get_channel(WITHDRAW_CHANNEL_ID)
+    try:
+        ok, result = await create_payout(ctx.author.id, ltc_address, ltc_amount, usd_value)
+    except Exception as e:
+        ok, result = False, str(e)
 
-    if channel:
-        await channel.send(embed=embed)
+    if not ok:
+        # Refund
+        set_user_balance(ctx.author.id, get_user_balance(ctx.author.id) + amount)
+        await notice.edit(content=f"❌ Payout failed: `{result}`. Your **{amount:,} pts** were refunded.")
+        return
 
-    await ctx.send(
-        "✅ Withdrawal request submitted.\n"
-        "An administrator will process it shortly."
-    )
+    batch_id = str(result['batch_id'])
+    withdrawals = result.get('withdrawals') or []
+    np_payout_id = str(withdrawals[0]['id']) if withdrawals and 'id' in withdrawals[0] else batch_id
+
+    # Persist record + bump total_withdrawn
+    w = get_withdrawals()
+    w[np_payout_id] = {
+        'batch_id': batch_id,
+        'user_id': str(ctx.author.id),
+        'points': amount,
+        'usd': usd_value,
+        'ltc': ltc_amount,
+        'address': ltc_address,
+        'status': 'sending',
+        'created': datetime.now(timezone.utc).isoformat(),
+    }
+    save_withdrawals(w)
+    data, uid = get_user(ctx.author.id)
+    data[uid]['total_withdrawn'] = data[uid].get('total_withdrawn', 0) + amount
+    save_data(data)
+
+    embed = discord.Embed(title="✅ Withdrawal Sent", color=0x00E676, description=(
+        f"**{amount:,} pts** (≈ **${usd_value:.2f}**) → `{ltc_amount:.8f} LTC`\n"
+        f"To: `{ltc_address}`\n"
+        f"Status: **sending** — usually confirms within a few minutes."))
+    embed.set_footer(text=f"Payout ID: {np_payout_id}")
+    await notice.edit(content=None, embed=embed)
+
+    # Optional admin log channel
+    ch = bot.get_channel(WITHDRAW_CHANNEL_ID)
+    if ch:
+        log = discord.Embed(title="💸 Auto-Withdrawal Processed", color=0x00E676,
+                            timestamp=datetime.now(timezone.utc))
+        log.description = (
+            f"**User:** {ctx.author.mention} (`{ctx.author.id}`)\n"
+            f"**Amount:** {amount:,} pts  ·  ${usd_value:.2f}  ·  {ltc_amount:.8f} LTC\n"
+            f"**Address:** `{ltc_address}`\n"
+            f"**Payout ID:** `{np_payout_id}`")
+        try: await ch.send(embed=log)
+        except: pass
+
+
+async def payout_watcher():
+    """Poll NOWPayments for payout status, refund failures, mark completions."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            withdrawals = get_withdrawals()
+            pending = [pid for pid, r in withdrawals.items()
+                       if r.get('status') in ('sending', 'waiting', 'creating', 'processing')]
+            if pending:
+                jwt = await nowpayments_jwt()
+                headers = {'x-api-key': NOWPAYMENTS_API_KEY,
+                           'Authorization': f'Bearer {jwt}'}
+                async with aiohttp.ClientSession() as session:
+                    for pid in pending:
+                        rec = withdrawals.get(pid)
+                        if not rec: continue
+                        try:
+                            async with session.get(f"{NOWPAYMENTS_API}/payout/{pid}",
+                                                   headers=headers,
+                                                   timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                                data = await resp.json(content_type=None)
+                        except Exception:
+                            continue
+                        status = (data.get('status') or '').lower() if isinstance(data, dict) else ''
+                        if status in PAYOUT_DONE_STATES:
+                            rec['status'] = 'finished'
+                            rec['hash'] = data.get('hash')
+                            rec['finished_at'] = datetime.now(timezone.utc).isoformat()
+                            withdrawals[pid] = rec; save_withdrawals(withdrawals)
+                        elif status in PAYOUT_DEAD_STATES:
+                            # Refund the player & decrement total_withdrawn
+                            rec['status'] = status
+                            withdrawals[pid] = rec; save_withdrawals(withdrawals)
+                            uid_int = int(rec['user_id'])
+                            set_user_balance(uid_int, get_user_balance(uid_int) + int(rec['points']))
+                            d, u = get_user(uid_int)
+                            d[u]['total_withdrawn'] = max(0, d[u].get('total_withdrawn', 0) - int(rec['points']))
+                            save_data(d)
+                            try:
+                                user = await bot.fetch_user(uid_int)
+                                await user.send(
+                                    f"⚠️ Your withdrawal of **{rec['points']:,} pts** failed on-chain "
+                                    f"(`{status}`). The points have been refunded to your balance."
+                                )
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+
+
 
     
+HELP_CATEGORIES = {
+    "games": {
+        "label": "🎮 Games",
+        "description": "All casino games",
+        "emoji": "🎮",
+        "color": 0xE91E63,
+        "lines": [
+            "🪙 `.coinflip` / `.cf <amt> <h/t>` — Coin flip 1:1",
+            "🎲 `.dice <amt> <1-6>` — Dice guess ×5",
+            "📈 `.limbo <amt> <target>` — Beat your target multiplier",
+            "🎰 `.slots <amt>` — Slots up to ×100",
+            "🎡 `.roulette <amt> <r/b/e/o>` — Roulette ×2",
+            "🃏 `.blackjack` / `.bj <amt>` — Hit, Stand, Double",
+            "⛏️ `.mines <amt> [mines]` — Provably fair mines",
+            "🚀 `.crash <amt>` — Multiplayer crash game",
+            "💎 `.jackpot` / `.jp <amt>` — Weighted jackpot pool",
+            "✂️ `.rps <amt> <r/p/s>` — Rock-Paper-Scissors",
+            "🎢 `.slide <amt> <target>` — Slider game",
+            "#️⃣ `.ttt @user` — Tic Tac Toe vs another user",
+            "🗜️ `.tight <amt>` — Random multiplier ×5 (96% RTP)",
+            "🗼 `.tower <amt>` — Climb the tower",
+            "💰 `.treasurehunt` / `.th <amt>` — Pick a chest, up to 2.5×",
+            "🌀 `.twist <amt>` — Multiplier tiles via dice",
+            "💘 `.valentines <amt>` — Valentine's Day slots",
+            "⚔️ `.war <amt>` — Card war ×2",
+        ],
+    },
+    "rewards": {
+        "label": "🎁 Rewards",
+        "description": "Daily, monthly, rakeback & codes",
+        "emoji": "🎁",
+        "color": 0xF1C40F,
+        "lines": [
+            "`.daily` — 5 pts free (24h cooldown)",
+            "`.monthly` — 1pt per R$1,000 wagered",
+            "`.rakeback` — Claim 0.2% of your losses",
+            "`.code <CODE>` — Redeem a promo code",
+        ],
+    },
+    "social": {
+        "label": "🤝 Social",
+        "description": "Tips, rain, clans & giveaways",
+        "emoji": "🤝",
+        "color": 0x2ECC71,
+        "lines": [
+            "`.send @user <amt>` — Send points",
+            "`.rain <amt>` — Rain points on joiners (2 min)",
+            "`.giveaway <amt> <mins> [wager:X] [invites:X]` — Admin giveaway",
+            "`.clan <create/join/leave/info/top>` — Clan system",
+            "`.thread` — Create a private thread",
+            "`.invites [@user]` — Invite count",
+        ],
+    },
+    "info": {
+        "label": "📊 Info & Account",
+        "description": "Balance, stats, deposits, leaderboards",
+        "emoji": "📊",
+        "color": 0x3498DB,
+        "lines": [
+            "`.games` — List every game",
+            "`.deposit <usd>` — Get a unique LTC address (DM)",
+            "`.withdraw <amt> <ltc_address>` — Auto LTC payout",
+            "`.balance` / `.bal` — Your balance",
+            "`.wager` — Wager requirement status",
+            "`.stats [@user]` — Full profile & stats",
+            "`.rank` — Rank progress",
+            "`.leaderboard` / `.lb` — Top 10 players",
+            "`.price` — Points price table",
+        ],
+    },
+    "admin": {
+        "label": "🛡️ Admin",
+        "description": "Administrator commands",
+        "emoji": "🛡️",
+        "color": 0xE74C3C,
+        "lines": [
+            "`.addbal @user <amt>` — Add balance",
+            "`.removebal @user <amt>` — Remove balance",
+            "`.promo @user <amt>` — Points + wager requirement",
+            "`.clearwager @user` — Clear wager requirement",
+            "`.wagerstatus @user` — Check wager progress",
+            "`.updwithdraw @user <amt>` — Bump withdraw total",
+            "`.updatedeposit @user <usd>` — Bump deposit total",
+            "`.resetstats` — Reset all player stats",
+            "`.housebal` / `.bankroll` — House bankroll report",
+            "`.resethouse [scope]` — Reset house stats",
+            "`.setrank <rank> @role` — Link rank to role",
+            "`.rankroles` — View rank→role config",
+            "`.sethistory #channel` — Log every bet result",
+            "`.clearhistory` — Disable bet history",
+            "`.setdepositlog #channel` — Log deposits",
+            "`.cleardepositlog` — Disable deposit log",
+            "`.addcode <CODE> <pts> <uses> <days> [req]` — Create code",
+            "`.delcode <CODE>` — Delete a code",
+            "`.codes` — List active codes",
+        ],
+    },
+}
+
+
+def _help_home_embed():
+    embed = discord.Embed(
+        title="🎰  LuckyBet — Help",
+        description=(
+            "Pick a **category** from the menu below to view its commands.\n\n"
+            + "\n".join(f"{c['emoji']} **{c['label'].split(' ', 1)[1]}** — {c['description']}"
+                       for c in HELP_CATEGORIES.values())
+        ),
+        color=0x9B59B6,
+    )
+    embed.set_footer(text="💱 R$1 = 1 point  |  R$1,000 ≈ $3.70 USD")
+    return embed
+
+
+def _help_category_embed(key):
+    cat = HELP_CATEGORIES[key]
+    embed = discord.Embed(
+        title=f"{cat['label']} — Commands",
+        description="\n".join(cat["lines"]),
+        color=cat["color"],
+    )
+    embed.set_footer(text="Use the menu to switch categories • 'Home' to go back")
+    return embed
+
+
+class HelpView(discord.ui.View):
+    def __init__(self, author_id):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.add_item(HelpSelect())
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "❌ Only the user who ran `.help` can use this menu.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Home", style=discord.ButtonStyle.secondary, emoji="🏠", row=1)
+    async def home(self, interaction, button):
+        await interaction.response.edit_message(embed=_help_home_embed(), view=self)
+
+
+class HelpSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label=cat["label"].split(" ", 1)[1],
+                description=cat["description"][:100],
+                emoji=cat["emoji"],
+                value=key,
+            )
+            for key, cat in HELP_CATEGORIES.items()
+        ]
+        super().__init__(placeholder="📂 Select a category…", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction):
+        await interaction.response.edit_message(
+            embed=_help_category_embed(self.values[0]), view=self.view
+        )
+
+
 @bot.command(name='help')
-async def help_command(ctx):
-    embed = discord.Embed(title="🎰  LuckyBet — Commands", color=0x9B59B6)
-    embed.add_field(name="🎮 Games", value=(
-        "`.coinflip` / `.cf <amt> <h/t>` — Coin flip 1:1\n"
-        "`.dice <amt> <1-6>` — Dice guess ×5\n"
-        "`.limbo <amt> <target>` — Beat your target multiplier\n"
-        "`.slots <amt>` — Slots up to ×100\n"
-        "`.roulette <amt> <r/b/e/o>` — Roulette ×2\n"
-        "`.blackjack` / `.bj <amt>` — Hit, Stand, Double\n"
-        "`.mines <amt> [mines]` — Provably fair mines\n"
-        "`.crash <amt>` — Multiplayer crash game\n"
-        "`.jackpot` / `.jp <amt>` — Weighted jackpot pool"
-        "✂️ `.rps <amt> <r/p/s>` — Rock-Paper-Scissors vs the bot\n"
-        "🎢 `.slide <amt> <target>` — Slider; win if it lands ≥ your pick\n"
-        "#️⃣ `.ttt @user` — Tic Tac Toe against another user\n"
-        "🗜️ `.tight <amt>` — Random multiplier up to 5.00× (96% RTP)\n"
-        "🗼 `.tower <amt>` — Climb the tower; choose difficulty after betting\n"
-        "💰 `.treasurehunt` / `.th <amt>` — Pick a chest, up to 2.5×\n"
-        "🌀 `.twist <amt>` — Move through multiplier tiles via dice rolls\n"
-        "💘 `.valentines <amt>` — Special Valentine's Day slots\n"
-        "⚔️ `.war <amt>` — Card war; highest card wins ×2"
-    ), inline=False)
-    embed.add_field(name="🎁 Rewards", value=(
-        "`.daily` — 5 pts free (24h cooldown)\n"
-        "`.monthly` — 1pt per R$1,000 wagered\n"
-        "`.rakeback` — Claim 0.2% of your losses\n"
-        "`.code <CODE>` — Redeem a promo code"
-    ), inline=False)
-    embed.add_field(name="🤝 Social", value=(
-        "`.send @user <amt>` — Send points\n"
-        "`.rain <amt>` — Rain points on joiners (2 min)\n"
-        "`.giveaway <amt> <mins> [wager:X] [invites:X]` — Admin giveaway\n"
-        "`.clan <create/join/leave/info/top>` — Clan system\n"
-        "`.thread` — Create a private thread"
-    ), inline=False)
-    embed.add_field(name="📊 Info", value=(
-        "`.games` — List every game in the bot\n"
-        "`.deposit <usd>` — Get a unique LTC address (DM) to top up points\n"
-        "`.balance` / `.bal` — Your balance\n"
-        "`.wager` — Check your wager requirement status\n"
-        "`.stats [@user]` — Full profile & lifetime stats\n"
-        "`.rank` — Full rank progress\n"
-        "`.leaderboard` / `.lb` — Top 10 players\n"
-        "`.price` — Points price table"
-    ), inline=False)
-    embed.add_field(name="🛡️ Admin", value=(
-        "`.addbal @user <amt>` — Add balance\n"
-        "`.removebal @user <amt>` — Remove balance\n"
-        "`.promo @user <amt>` — Give points with wager requirement (1x-20x)\n"
-        "`.clearwager @user` — Clear wager requirement for user\n"
-        "`.wagerstatus @user` — Check user's wager requirement progress\n"
-        "`.updwithdraw @user <amt>` — Add to withdraw total\n"
-        "`.updatedeposit @user <usd>` — Add to user's deposit total\n"
-        "`.resetstats` — Reset all players' stats\n"
-        "`.setrank <rank> @role` — Link rank to a role\n"
-        "`.rankroles` — View current rank→role config\n"
-        "`.sethistory #channel` — Log every bet result there\n"
-        "`.clearhistory` — Disable bet history logging\n"
-        "`.setdepositlog #channel` — Log every confirmed deposit there\n"
-        "`.cleardepositlog` — Disable deposit logging\n"
-        "`.addcode <CODE> <pts> <uses> <days> [req]` — Create code\n"
-        "`.delcode <CODE>` — Delete a code\n"
-        "`.codes` — List all active codes"
-    ), inline=False)
-    embed.add_field(name="💱 Currency", value="R$1 = 1 point  |  R$1,000 = $3.70 USD", inline=False)
-    await ctx.send(embed=embed)
+async def help_command(ctx, *, category: str = None):
+    # Allow direct shortcut: .help games
+    if category:
+        key = category.lower().strip()
+        if key in HELP_CATEGORIES:
+            return await ctx.send(embed=_help_category_embed(key), view=HelpView(ctx.author.id))
+    await ctx.send(embed=_help_home_embed(), view=HelpView(ctx.author.id))
+
+
+
+def _format_usage(command):
+    """Return a `.cmd <args>` usage string built from the command's signature."""
+    prefix = '.'
+    name = command.qualified_name
+    sig = command.signature  # discord.py auto-builds "<arg> [opt]" style
+    aliases = ""
+    if command.aliases:
+        aliases = f"  ·  aliases: {', '.join('.' + a for a in command.aliases)}"
+    line = f"`{prefix}{name}{(' ' + sig) if sig else ''}`{aliases}"
+    if command.help:
+        line += f"\n{command.help.strip().splitlines()[0]}"
+    return line
+
+
+def _suggest_command(name):
+    """Find the closest known command/alias to a mistyped name."""
+    import difflib
+    pool = []
+    for c in bot.commands:
+        pool.append(c.name); pool.extend(c.aliases)
+    matches = difflib.get_close_matches(name.lower(), pool, n=1, cutoff=0.6)
+    return matches[0] if matches else None
+
 
 @bot.event
 async def on_command_error(ctx, error):
-    print(f"ERROR IN COMMAND {ctx.command}: {repr(error)}")
-    await ctx.send(f"❌ Error: {error}")
+    # Unwrap CommandInvokeError to get the real cause
+    err = getattr(error, 'original', error)
+
+    # Wrong/unknown command → suggest closest + show its usage
+    if isinstance(error, commands.CommandNotFound):
+        typed = ctx.message.content.lstrip('.').split()[0] if ctx.message.content else ''
+        suggestion = _suggest_command(typed)
+        if suggestion:
+            cmd = bot.get_command(suggestion)
+            if cmd:
+                await ctx.send(
+                    f"❓ Unknown command `.{typed}`. Did you mean:\n"
+                    f"➡️ {_format_usage(cmd)}"
+                ); return
+        await ctx.send(f"❓ Unknown command `.{typed}`. Try `.help` for a list of commands.")
+        return
+
+    # Missing / bad arguments → show that command's correct usage
+    if isinstance(error, (commands.MissingRequiredArgument,
+                          commands.BadArgument,
+                          commands.TooManyArguments,
+                          commands.MemberNotFound,
+                          commands.UserNotFound,
+                          commands.ChannelNotFound,
+                          commands.RoleNotFound,
+                          commands.BadUnionArgument)) and ctx.command:
+        await ctx.send(f"💡 **Usage:** {_format_usage(ctx.command)}")
+        return
+
+    # Permission / cooldown messages stay friendly
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("🔒 You don't have permission to use that command."); return
+    if isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("🔒 I don't have the permissions needed for that command."); return
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"⏳ Slow down — try again in {error.retry_after:.1f}s."); return
+    if isinstance(error, commands.NoPrivateMessage):
+        await ctx.send("📭 That command can only be used in a server."); return
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("🚫 You can't use that command here."); return
+
+    # Anything else → log to console, give the user a clean message
+    print(f"ERROR IN COMMAND {ctx.command}: {repr(err)}")
+    if ctx.command:
+        await ctx.send(f"⚠️ Something went wrong running `.{ctx.command.qualified_name}`. "
+                       f"Usage: {_format_usage(ctx.command)}")
+    else:
+        await ctx.send("⚠️ Something went wrong. Try `.help` for the command list.")
 
 if __name__ == "__main__":
     TOKEN = os.getenv('DISCORD_TOKEN')
