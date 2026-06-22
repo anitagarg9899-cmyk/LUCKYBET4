@@ -2618,11 +2618,12 @@ RAIN_MIN_DEPOSIT_USD = 0.5  # lifetime deposit required to join rain
 RAIN_WAGER_MULTIPLIER = 5   # claimed rain points need 5x wager before withdrawal
 
 class RainView(discord.ui.View):
-    def __init__(self, host_id, amount):
+    def __init__(self, host_id, amount, require=False):
         super().__init__(timeout=RAIN_DURATION)
         self.host_id  = host_id  # may be None (hourly/house rain)
         self.amount   = amount
         self.joiners  = set()
+        self.require  = require  # True only for hourly/house rains
 
     @discord.ui.button(label="🌧️ Join Rain", style=discord.ButtonStyle.primary, custom_id="rain_join")
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2632,25 +2633,26 @@ class RainView(discord.ui.View):
         if uid in self.joiners:
             await interaction.response.send_message("✅ You're already in the rain!", ephemeral=True); return
 
-        data, ukey = get_user(uid)
-        deposited = float(data[ukey].get('total_deposited', 0.0) or 0.0)
-        if deposited < RAIN_MIN_DEPOSIT_USD:
-            need_pts = usd_to_points(RAIN_MIN_DEPOSIT_USD)
-            await interaction.response.send_message(
-                f"❌ **Requirement not met!**\n\n"
-                f"**Requirements to join:**\n"
-                f"💸 Have a lifetime deposit of at least **${RAIN_MIN_DEPOSIT_USD}$** (~{need_pts} points)!\n\n"
-                f"Your lifetime deposit: **${deposited:.2f}**\n\n"
-                f"*(Note: Points claimed from rain have a {RAIN_WAGER_MULTIPLIER}x wager requirement before withdrawal).*",
-                ephemeral=True); return
+        if self.require:
+            data, ukey = get_user(uid)
+            deposited = float(data[ukey].get('total_deposited', 0.0) or 0.0)
+            if deposited < RAIN_MIN_DEPOSIT_USD:
+                need_pts = usd_to_points(RAIN_MIN_DEPOSIT_USD)
+                await interaction.response.send_message(
+                    f"❌ **Requirement not met!**\n\n"
+                    f"**Requirements to join:**\n"
+                    f"💸 Have a lifetime deposit of at least **${RAIN_MIN_DEPOSIT_USD}$** (~{need_pts} points)!\n\n"
+                    f"Your lifetime deposit: **${deposited:.2f}**\n\n"
+                    f"*(Note: Points claimed from rain have a {RAIN_WAGER_MULTIPLIER}x wager requirement before withdrawal).*",
+                    ephemeral=True); return
 
         self.joiners.add(uid)
         count = len(self.joiners)
         share = self.amount // count if count else self.amount
+        extra = f"\n*(Note: claimed points carry a {RAIN_WAGER_MULTIPLIER}x wager requirement.)*" if self.require else ""
         await interaction.response.send_message(
             f"🌧️ You joined the rain! **{count}** player{'s' if count != 1 else ''} in so far — "
-            f"current share: **R${share:,}** each.\n"
-            f"*(Note: claimed points carry a {RAIN_WAGER_MULTIPLIER}x wager requirement.)*",
+            f"current share: **R${share:,}** each.{extra}",
             ephemeral=True)
 
     async def on_timeout(self):
@@ -2668,8 +2670,9 @@ def _rain_req_text():
 
 async def _run_rain(channel, amount, host_id, host_label):
     """Run a rain round in `channel`. host_id=None for house/hourly rains."""
-    view = RainView(host_id, amount)
-    req_text = _rain_req_text()
+    require = host_id is None  # hourly/house rains enforce requirements
+    view = RainView(host_id, amount, require=require)
+    req_text = _rain_req_text() if require else ""
     embed = discord.Embed(
         title="🌧️  It's Raining Points!",
         description=(
@@ -2727,7 +2730,8 @@ async def _run_rain(channel, amount, host_id, host_label):
         set_user_balance(uid, prev + payout)
         rd, ruid = get_user(uid)
         rd[ruid]['tips_received'] = rd[ruid].get('tips_received', 0) + payout
-        rd[ruid]['wager_requirement'] = rd[ruid].get('wager_requirement', 0) + payout * RAIN_WAGER_MULTIPLIER
+        if require:
+            rd[ruid]['wager_requirement'] = rd[ruid].get('wager_requirement', 0) + payout * RAIN_WAGER_MULTIPLIER
         save_data(rd)
         try: user = await bot.fetch_user(uid); names.append(f"**{user.name}** +R${payout:,}")
         except: names.append(f"+R${payout:,}")
@@ -2737,12 +2741,13 @@ async def _run_rain(channel, amount, host_id, host_label):
         sd[suid]['tips_sent'] = sd[suid].get('tips_sent', 0) + amount
         save_data(sd)
 
+    wager_note = (f"\n\n*(Claimed points carry a **{RAIN_WAGER_MULTIPLIER}x wager requirement** before withdrawal.)*" if require else "")
     embed = discord.Embed(
         title="🌧️  Rain Complete!",
         description=(
             f"**{host_label}** rained **R${amount:,}** on **{len(joiners)}** player{'s' if len(joiners)!=1 else ''}!\n\n"
             + "\n".join(names)
-            + f"\n\n*(Claimed points carry a **{RAIN_WAGER_MULTIPLIER}x wager requirement** before withdrawal.)*"
+            + wager_note
         ),
         color=0x00FF88
     )
