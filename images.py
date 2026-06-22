@@ -400,25 +400,50 @@ def draw_card_tile(d, cx, cy, value):
     lbl = "A" if value == 11 else str(value)
     center_text(d, lbl, fnt(20, bold=True), cx, cy - 2, (30, 30, 30))
 
-def blackjack_card(username, player_cards, player_val, dealer_cards, dealer_val, won):
+def draw_card_back(d, cx, cy):
+    """Face-down card back used while the dealer's hole card is hidden."""
+    w, h = 52, 72
+    rr(d, [cx - w//2, cy - h//2, cx + w//2, cy + h//2], 8, fill=(20, 60, 110), outline=ACCENT, width=2)
+    for ox in range(-18, 19, 12):
+        for oy in range(-26, 27, 14):
+            d.polygon([(cx+ox, cy+oy-4), (cx+ox+4, cy+oy), (cx+ox, cy+oy+4), (cx+ox-4, cy+oy)], fill=ACCENT)
+
+def blackjack_card(username, player_cards, player_val, dealer_cards, dealer_val, won,
+                   hide_hole=False, status=None):
+    """status: None | 'playing' | 'win' | 'lose' | 'push' | 'bust' | 'blackjack'"""
     W, H = 500, 360
     img, d = make_card(W, H, "\U0001f0cf  Blackjack", f"bet by {username}")
 
-    # Player hand
     d.text((22, 68), "Your hand", fill=GRAY, font=fnt(13))
     px_start = 60
     for i, c in enumerate(player_cards[:6]):
         draw_card_tile(d, px_start + i * 62, 115, c)
-    d.text((22, 148), f"Total: {player_val}", fill=ACCENT, font=fnt(15, bold=True))
+    pcolor = RED if player_val > 21 else ACCENT
+    d.text((22, 148), f"Total: {player_val}", fill=pcolor, font=fnt(15, bold=True))
 
-    # Dealer hand
     d.text((22, 170), "Dealer hand", fill=GRAY, font=fnt(13))
     for i, c in enumerate(dealer_cards[:6]):
-        draw_card_tile(d, px_start + i * 62, 218, c)
-    d.text((22, 250), f"Total: {dealer_val}", fill=RED if dealer_val > 21 else ACCENT, font=fnt(15, bold=True))
+        x = px_start + i * 62
+        if hide_hole and i >= 1:
+            draw_card_back(d, x, 218)
+        else:
+            draw_card_tile(d, x, 218, c)
+    if hide_hole:
+        d.text((22, 250), "Total: ?", fill=GRAY, font=fnt(15, bold=True))
+    else:
+        dcolor = RED if dealer_val > 21 else ACCENT
+        d.text((22, 250), f"Total: {dealer_val}", fill=dcolor, font=fnt(15, bold=True))
 
-    label = "YOU WIN!" if won else "YOU LOST"
-    result_banner(d, W, 280, won, label)
+    if status and status != 'playing':
+        labels = {'win': 'YOU WIN!', 'lose': 'YOU LOST',
+                  'push': "PUSH \u2014 TIE", 'bust': 'BUST!',
+                  'blackjack': 'BLACKJACK!'}
+        label = labels.get(status, 'YOU WIN!' if won else 'YOU LOST')
+        good = status in ('win', 'blackjack', 'push')
+        result_banner(d, W, 280, good, label)
+    elif status is None:
+        label = "YOU WIN!" if won else "YOU LOST"
+        result_banner(d, W, 280, won, label)
     return to_buf(img)
 
 # Mines result card
