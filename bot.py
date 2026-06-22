@@ -2469,21 +2469,36 @@ async def codes_cmd(ctx):
     if not codes:
         await ctx.send("📋 No codes exist yet. Use `.addcode` to create one."); return
     embed = discord.Embed(title="📋 Active Promo Codes", color=0x9B59B6)
+    shown = 0
     for name, c in codes.items():
-        expires = datetime.fromisoformat(c['expires_at'])
-        if expires.tzinfo is None: expires = expires.replace(tzinfo=timezone.utc)
-        expired  = now > expires
-        uses_left = c['max_uses'] - len(c['used_by'])
-        status   = "❌ Expired" if expired else ("⚠️ Used up" if uses_left <= 0 else f"✅ {uses_left}/{c['max_uses']} uses left")
-        td       = expires - now if not expired else timedelta(0)
-        h        = int(td.total_seconds() // 3600)
-        m        = int((td.total_seconds() % 3600) // 60)
-        exp_str  = "Expired" if expired else f"Expires in {h}h {m}m"
-        embed.add_field(
-            name=f"`{name}`",
-            value=f"R${c['reward']:,} reward  ·  {status}\n{exp_str}",
-            inline=False
-        )
+        if not isinstance(c, dict):
+            continue
+        try:
+            reward    = int(c.get('reward', 0) or 0)
+            max_uses  = int(c.get('max_uses', 0) or 0)
+            used_by   = c.get('used_by', []) or []
+            exp_raw   = c.get('expires_at')
+            if not exp_raw:
+                continue
+            expires = datetime.fromisoformat(exp_raw)
+            if expires.tzinfo is None: expires = expires.replace(tzinfo=timezone.utc)
+            expired   = now > expires
+            uses_left = max_uses - len(used_by)
+            status    = "❌ Expired" if expired else ("⚠️ Used up" if uses_left <= 0 else f"✅ {uses_left}/{max_uses} uses left")
+            td        = expires - now if not expired else timedelta(0)
+            h         = int(td.total_seconds() // 3600)
+            m         = int((td.total_seconds() % 3600) // 60)
+            exp_str   = "Expired" if expired else f"Expires in {h}h {m}m"
+            embed.add_field(
+                name=f"`{name}`",
+                value=f"R${reward:,} reward  ·  {status}\n{exp_str}",
+                inline=False
+            )
+            shown += 1
+        except Exception:
+            continue
+    if shown == 0:
+        await ctx.send("📋 No valid codes found. Use `.addcode` to create one."); return
     await ctx.send(embed=embed)
 
 @codes_cmd.error
