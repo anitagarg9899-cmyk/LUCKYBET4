@@ -596,6 +596,224 @@ async def crash_cmd(ctx, amount: str):
     else:
         await ctx.send("⏳ Please wait — wrapping up the last round.", delete_after=5)
 
+CRASH_ROOM_LOBBY_SECS = 30   # seconds before a crash room starts
+
+crash_room_state = {
+    'active':     False,
+    'host_id':    None,
+    'bet_amount': 0,
+    'bets':       {},   # uid -> {'amount': int, 'start_bal': int, 'username': str}
+    'cashed':     {},   # uid -> {'mult': float, 'profit': int}
+    'crash_at':   1.0,
+    'mult':       1.0,
+    'message':    None,
+    'channel_id': None,
+    'view':       None,
+    'guild_id':   None,
+    'phase':      'idle',  # idle | lobby | running | crashed
+}
+
+
+class CrashRoomView(discord.ui.View):
+    def __init__(self, bet_amount, host_id):
+        super().__init__(timeout=None)
+        self.bet_amount = bet_amount
+        self.host_id    = host_id
+
+    @discord.ui.button(label="Join Now", style=discord.ButtonStyle.primary, custom_id="crashroom_join")
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = interaction.user.id
+        if crash_room_state['phase'] != 'lobby':
+            await interaction.response.send_message("❌ The join window is closed for this room!", ephemeral=True); return
+        if uid in crash_room_state['bets']:
+            await interaction.response.send_message("✅ You're already in this crash room!", ephemeral=True); return
+        bal = get_user_balance(uid)
+        if self.bet_amount > bal:
+            await interaction.response.send_message(
+                f"❌ You need **R${self.bet_amount:,}** to join. Your balance: {fmt(bal)}", ephemeral=True); return
+        crash_room_state['bets'][uid] = {
+            'amount': self.bet_amount, 'start_bal': bal,
+            'username': interaction.user.name
+        }
+        count = len(crash_room_state['bets'])
+        await interaction.response.send_message(
+            f"🚀 You joined the crash room! Bet: **R${self.bet_amount:,}** — **{count}** player{'s' if count!=1 else ''} in.",
+            ephemeral=True)
+        embed = _crash_room_embed('lobby')
+        try: await crash_room_state['message'].edit(embed=embed, view=self)
+        except: pass
+
+    @discord.ui.button(label="💰 Cash Out", style=discord.ButtonStyle.success, custom_id="crashroom_co")
+    async def cashout(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = interaction.user.id
+        if crash_room_state['phase'] != 'running':
+            await interaction.response.send_message("No active crash room right now!", ephemeral=True); return
+        if uid not in crash_room_state['bets']:
+            await interaction.response.send_message("You didn't join this room!", ephemeral=True); return
+        if uid in crash_room_state['cashed']:
+            await interaction.response.send_message("You already cashed out!", ephemeral=True); return
+        mult    = crash_room_state['mult']
+        bet     = crash_room_state['bets'][uid]['amount']
+        sb      = crash_room_state['bets'][uid]['start_bal']
+        profit  = round(bet * mult) - bet
+        new_bal = sb + profit
+        set_user_balance(uid, new_bal)
+        add_to_stats(uid, True, bet)
+        if crash_room_state['guild_id']:
+            guild = bot.get_guild(crash_room_state['guild_id'])
+            if guild:
+                asyncio.create_task(assign_rank_role(guild, uid))
+        crash_room_state['cashed'][uid] = {'mult': mult, 'profit': profit}
+        await interaction.response.send_message(
+            f"✅ Cashed out at **{mult:.2f}×** — profit: **+R${profit:,}**  |  New balance: {fmt(new_bal)}",
+            ephemeral=True)
+        uname = crash_room_state['bets'][uid].get('username', str(uid))
+        guild  = bot.get_guild(crash_room_state['guild_id']) if crash_room_state['guild_id'] else None
+        asyncio.create_task(send_to_history(guild, 'crash', uname, uid, bet, True, profit, new_bal))
+
+
+def _crash_room_embed(phase):
+    bets   = crash_room_state['bets']
+    cashed = crash_room_state['cashed']
+    mult   = crash_room_state['mult']
+    bet    = crash_room_state['bet_amount']
+    host   = crash_room_state.get('host_label', 'Host')
+
+    if phase == 'lobby':
+        title = "🚀  Crash Room — Lobby Open"
+        desc  = (f"**Host:** {host}\n**Entry bet:** R${bet:,}\n\n"
+                 f"Click **Join Now** to enter with **R${bet:,}**.\n"
+                 f"Game starts in ~{CRASH_ROOM_LOBBY_SECS}s after first player joins.")
+        color = 0x9B59B6
+    elif phase == 'running':
+        title = f"🚀  Crash Room — {mult:.2f}×  FLYING"
+        desc  = f"**Current Multiplier:** `{mult:.2f}×`\nClick **Cash Out** before it crashes!\n\n"
+        color = 0x00FF88 if mult < 3 else (0xFFD700 if mult < 7 else 0xFF5000)
+    elif phase == 'crashed':
+        title = f"💥  Crash Room — Crashed at {crash_room_state['crash_at']:.2f}×"
+        desc  = f"**Crash Point:** `{crash_room_state['crash_at']:.2f}×`\n\n"
+        color = 0xFF4444
+    else:
+        title = "🚀  Crash Room"; desc = ""; color = 0x1E90FF
+
+    if bets:
+        lines = []
+        for uid, b in bets.items():
+            if uid in cashed:
+                c = cashed[uid]; sign = "+" if c['profit'] >= 0 else ""
+                lines.append(f"✅ **{b['username']}** — cashed {c['mult']:.2f}× ({sign}R${c['profit']:,})")
+            elif phase == 'crashed':
+                lines.append(f"💥 **{b['username']}** — lost R${b['amount']:,}")
+            else:
+                lines.append(f"🎲 **{b['username']}** — R${b['amount']:,}")
+        desc += "\n".join(lines)
+
+    embed = discord.Embed(title=title, description=desc, color=color)
+    if phase == 'lobby':
+        embed.set_footer(text=f"Entry: R${bet:,}  |  {CRASH_ROOM_LOBBY_SECS}s to start")
+    return embed
+
+
+async def _run_crash_room(channel, guild_id, host_label):
+    crash_room_state['guild_id'] = guild_id
+    view   = CrashRoomView(crash_room_state['bet_amount'], crash_room_state['host_id'])
+    crash_room_state['view']  = view
+    crash_room_state['phase'] = 'lobby'
+
+    embed = _crash_room_embed('lobby')
+    crash_room_state['message'] = await channel.send(embed=embed, view=view)
+
+    first_join_deadline = asyncio.get_event_loop().time() + 120  # auto-cancel if no one joins in 2 min
+    while not crash_room_state['bets'] and asyncio.get_event_loop().time() < first_join_deadline:
+        await asyncio.sleep(1)
+
+    if not crash_room_state['bets']:
+        crash_room_state.update({'phase': 'idle', 'active': False, 'message': None, 'view': None})
+        try:
+            await crash_room_state['message'].edit(
+                embed=discord.Embed(title="🚀 Crash Room — Cancelled",
+                                     description="No one joined the room.", color=0x888888),
+                view=None)
+        except: pass
+        _reset_crash_room()
+        return
+
+    await asyncio.sleep(CRASH_ROOM_LOBBY_SECS)
+
+    for item in view.children:
+        if getattr(item, 'custom_id', None) == 'crashroom_join':
+            item.disabled = True
+
+    embed = _crash_room_embed('lobby')
+    try: await crash_room_state['message'].edit(embed=embed, view=view)
+    except: pass
+
+    crash_room_state['phase']    = 'running'
+    crash_room_state['crash_at'] = gen_crash_point()
+    crash_room_state['mult']     = 1.00
+    start_time = asyncio.get_event_loop().time()
+
+    while True:
+        elapsed = asyncio.get_event_loop().time() - start_time
+        crash_room_state['mult'] = crash_mult_at(elapsed)
+        if crash_room_state['mult'] >= crash_room_state['crash_at']:
+            crash_room_state['mult'] = crash_room_state['crash_at']
+            break
+        embed = _crash_room_embed('running')
+        try: await crash_room_state['message'].edit(embed=embed, view=view)
+        except: pass
+        await asyncio.sleep(CRASH_TICK)
+
+    crash_room_state['phase'] = 'crashed'
+    for uid, b in crash_room_state['bets'].items():
+        if uid not in crash_room_state['cashed']:
+            new_bal = b['start_bal'] - b['amount']
+            set_user_balance(uid, max(0, new_bal))
+            add_to_stats(uid, False, b['amount'])
+
+    embed = _crash_room_embed('crashed')
+    for item in view.children: item.disabled = True
+    try: await crash_room_state['message'].edit(embed=embed, view=view)
+    except: pass
+
+    await asyncio.sleep(8)
+    _reset_crash_room()
+
+
+def _reset_crash_room():
+    crash_room_state.update({
+        'active': False, 'host_id': None, 'bet_amount': 0,
+        'bets': {}, 'cashed': {}, 'crash_at': 1.0, 'mult': 1.0,
+        'message': None, 'channel_id': None, 'view': None,
+        'guild_id': None, 'phase': 'idle'
+    })
+
+
+@bot.command(name='crashroom')
+async def crashroom_cmd(ctx, amount: str):
+    if crash_room_state['phase'] != 'idle' and crash_room_state['active']:
+        await ctx.send("❌ A crash room is already active! Wait for it to finish."); return
+    bal = get_user_balance(ctx.author.id)
+    amount = resolve_bet(amount, bal)
+    if amount is None:
+        await ctx.send("❌ Invalid amount! Use a number, `all`, or `half`."); return
+    if amount <= 0:
+        await ctx.send("❌ Entry bet must be positive!"); return
+    if amount > bal:
+        await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
+
+    crash_room_state.update({
+        'active': True, 'host_id': ctx.author.id, 'bet_amount': amount,
+        'channel_id': ctx.channel.id, 'bets': {},
+        'cashed': {}, 'phase': 'idle', 'host_label': ctx.author.name
+    })
+    asyncio.create_task(_run_crash_room(ctx.channel,
+                                        ctx.guild.id if ctx.guild else None,
+                                        ctx.author.name))
+    try: await ctx.message.delete()
+    except: pass
+
+
 # ── Blackjack ─────────────────────────────────────────────────────────────────
 
 def cv(cards):
@@ -3116,7 +3334,8 @@ async def thread_cmd(ctx):
         "`.thread create` — Create a private thread\n"
         "`.thread close` — Close (archive) the current thread\n"
         "`.thread add @user` — Add a user to the current thread\n"
-        "`.thread remove @user` — Remove a user from the current thread"
+        "`.thread remove @user` — Remove a user from the current thread\n"
+        "`.thread rename <new name>` — Rename the current thread"
     ))
     await ctx.send(embed=embed)
 
@@ -3183,6 +3402,25 @@ async def thread_remove(ctx, member: discord.Member = None):
         await ctx.send("❌ I don't have permission to remove users from this thread!")
     except Exception as e:
         await ctx.send(f"❌ Could not remove user: {e}")
+
+
+@thread_cmd.command(name='rename')
+async def thread_rename(ctx, *, new_name: str = None):
+    if not isinstance(ctx.channel, discord.Thread):
+        await ctx.send("❌ This command can only be used inside a thread!"); return
+    if not new_name:
+        await ctx.send("❌ Usage: `.thread rename <new name>`"); return
+    if len(new_name) > 100:
+        await ctx.send("❌ Thread name must be 100 characters or less!"); return
+    try:
+        await ctx.channel.edit(name=new_name)
+        embed = discord.Embed(title="💬 Thread Renamed",
+                              description=f"Thread renamed to **{new_name}**", color=0x00BFFF)
+        await ctx.send(embed=embed)
+    except discord.Forbidden:
+        await ctx.send("❌ I don't have permission to rename this thread!")
+    except Exception as e:
+        await ctx.send(f"❌ Could not rename thread: {e}")
 
 # ── Jackpot ───────────────────────────────────────────────────────────────────
 
@@ -3631,6 +3869,7 @@ GAMES_CATALOG = [
     ("✂️", ".rps <amt> <r/p/s>", "Rock-Paper-Scissors vs the bot"),
     ("#️⃣", ".ttt @user", "Tic Tac Toe against another user"),
     ("🚀", ".crash <amt>", "Multiplayer crash game"),
+    ("🚀", ".crashroom <amt>", "Create a crash room (fixed entry bet)"),
     ("🎰", ".jackpot / .jp <amt>", "Weighted jackpot pool"),
 ]
 
@@ -4057,6 +4296,7 @@ HELP_CATEGORIES = {
             "🃏 `.blackjack` / `.bj <amt>` — Hit, Stand, Double",
             "⛏️ `.mines <amt> [mines]` — Provably fair mines",
             "🚀 `.crash <amt>` — Multiplayer crash game",
+            "🚀 `.crashroom <amt>` — Create a crash room (fixed entry)",
             "💎 `.jackpot` / `.jp <amt>` — Weighted jackpot pool",
             "✂️ `.rps <amt> <r/p/s>` — Rock-Paper-Scissors",
             "🎢 `.slide <amt> <target>` — Slider game",
