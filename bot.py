@@ -38,6 +38,13 @@ active_mines = {}
 active_bj    = {}
 invite_cache = {}   # guild_id -> {code: {'uses': int, 'inviter_id': int|None, 'max_uses': int}}
 
+# Thread lifecycle tracking
+# thread_activity: thread_id -> datetime of last message in it
+# user_threads:    user_id -> set of thread_ids this user owns/created
+THREAD_IDLE_TIMEOUT = 24 * 3600  # seconds before an idle thread is archived
+thread_activity = {}
+user_threads    = {}
+
 POINTS_TO_USD = 0.0037
 
 # ── Deposits (NOWPayments) ──────────────────────────────────────────────────
@@ -1104,6 +1111,9 @@ async def on_ready():
     if not getattr(bot, '_hourly_rain_started', False):
         bot._hourly_rain_started = True
         bot.loop.create_task(_hourly_rain_loop())
+    if not getattr(bot, '_thread_idle_started', False):
+        bot._thread_idle_started = True
+        bot.loop.create_task(_thread_idle_loop())
     print(f'{bot.user} has connected to Discord!')
     print('------')
 
@@ -1118,6 +1128,44 @@ async def on_invite_delete(invite):
     # single-use / max-uses invites that Discord deletes the moment
     # they're consumed. We only drop it once the join is processed.
     pass
+
+@bot.event
+async def on_message(message):
+    if isinstance(message.channel, discord.Thread) and not message.channel.archived:
+        thread_activity[message.channel.id] = datetime.now(timezone.utc)
+    await bot.process_commands(message)
+
+
+async def _thread_idle_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            now = datetime.now(timezone.utc)
+            stale = []
+            for tid, last in list(thread_activity.items()):
+                if (now - last).total_seconds() >= THREAD_IDLE_TIMEOUT:
+                    stale.append(tid)
+            for tid in stale:
+                for guild in bot.guilds:
+                    thread = guild.get_thread(tid)
+                    if thread is not None and not thread.archived:
+                        try:
+                            await thread.edit(archived=True, reason="Idle for 24h — auto-closed")
+                            try:
+                                await thread.send("🔒 This thread was auto-closed after 24 hours of inactivity. Create a new one with `.thread create`.")
+                            except: pass
+                        except discord.Forbidden:
+                            pass
+                        except Exception:
+                            pass
+                    thread_activity.pop(tid, None)
+            for uids in user_threads.values():
+                for tid in stale:
+                    uids.discard(tid)
+        except Exception as e:
+            print(f"[thread_idle_loop] error: {e}")
+        await asyncio.sleep(600)
+
 
 @bot.event
 async def on_member_join(member):
@@ -3341,6 +3389,22 @@ async def thread_cmd(ctx):
 
 @thread_cmd.command(name='create')
 async def thread_create(ctx):
+    existing = user_threads.get(ctx.author.id, set())
+    live_existing = set()
+    for tid in existing:
+        guild = ctx.guild
+        if guild is not None:
+            t = guild.get_thread(tid)
+            if t is not None and not t.archived:
+                live_existing.add(tid)
+    user_threads[ctx.author.id] = live_existing
+    if live_existing:
+        tid = next(iter(live_existing))
+        guild = ctx.guild
+        t = guild.get_thread(tid) if guild else None
+        mention = t.mention if t else f"thread ID {tid}"
+        await ctx.send(f"❌ You already have an active thread: {mention}\nUse `.thread close` there before making a new one.")
+        return
     try:
         thread = await ctx.channel.create_thread(
             name=f"{ctx.author.name}'s Thread",
@@ -3349,7 +3413,10 @@ async def thread_create(ctx):
         )
         await thread.add_user(ctx.author)
         await thread.send(f"Welcome {ctx.author.mention}! 👋 This is your private thread.")
+        thread_activity[thread.id] = datetime.now(timezone.utc)
+        user_threads.setdefault(ctx.author.id, set()).add(thread.id)
         embed = discord.Embed(title="💬 Thread Created", description=f"Your thread: {thread.mention}", color=0x00FF99)
+        embed.set_footer(text="Threads auto-close after 24h of inactivity")
         await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ I don't have permission to create private threads!")
@@ -3363,6 +3430,9 @@ async def thread_close(ctx):
         return
     try:
         await ctx.send("🗑️ Deleting thread...")
+        thread_activity.pop(ctx.channel.id, None)
+        for uids in user_threads.values():
+            uids.discard(ctx.channel.id)
         await ctx.channel.delete()
     except discord.Forbidden:
         await ctx.send("❌ I don't have permission to delete this thread!")
