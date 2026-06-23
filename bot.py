@@ -618,6 +618,7 @@ crash_room_state = {
     'view':       None,
     'guild_id':   None,
     'phase':      'idle',  # idle | lobby | running | crashed
+    'start_requested': False,
 }
 
 
@@ -626,6 +627,18 @@ class CrashRoomView(discord.ui.View):
         super().__init__(timeout=None)
         self.bet_amount = bet_amount
         self.host_id    = host_id
+
+    @discord.ui.button(label="▶ Start Now", style=discord.ButtonStyle.danger, custom_id="crashroom_start")
+    async def start_now(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = interaction.user.id
+        if uid != self.host_id:
+            await interaction.response.send_message("❌ Only the room host can start early!", ephemeral=True); return
+        if crash_room_state['phase'] != 'lobby':
+            await interaction.response.send_message("❌ The room is not in the lobby phase!", ephemeral=True); return
+        if not crash_room_state['bets']:
+            await interaction.response.send_message("❌ No players have joined yet!", ephemeral=True); return
+        crash_room_state['start_requested'] = True
+        await interaction.response.send_message("🚀 Host started the room — launching now!", ephemeral=True)
 
     @discord.ui.button(label="Join Now", style=discord.ButtonStyle.primary, custom_id="crashroom_join")
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -730,8 +743,11 @@ async def _run_crash_room(channel, guild_id, host_label):
     embed = _crash_room_embed('lobby')
     crash_room_state['message'] = await channel.send(embed=embed, view=view)
 
-    first_join_deadline = asyncio.get_event_loop().time() + 120  # auto-cancel if no one joins in 2 min
+    # Wait for first join (up to 2 min), or host Start Now if players present
+    first_join_deadline = asyncio.get_event_loop().time() + 120
     while not crash_room_state['bets'] and asyncio.get_event_loop().time() < first_join_deadline:
+        if crash_room_state['start_requested']:
+            break
         await asyncio.sleep(1)
 
     if not crash_room_state['bets']:
@@ -745,10 +761,16 @@ async def _run_crash_room(channel, guild_id, host_label):
         _reset_crash_room()
         return
 
-    await asyncio.sleep(CRASH_ROOM_LOBBY_SECS)
+    # Wait remaining lobby time, unless host hits Start Now
+    if not crash_room_state['start_requested']:
+        lobby_end = asyncio.get_event_loop().time() + CRASH_ROOM_LOBBY_SECS
+        while asyncio.get_event_loop().time() < lobby_end:
+            if crash_room_state['start_requested']:
+                break
+            await asyncio.sleep(1)
 
     for item in view.children:
-        if getattr(item, 'custom_id', None) == 'crashroom_join':
+        if getattr(item, 'custom_id', None) in ('crashroom_join', 'crashroom_start'):
             item.disabled = True
 
     embed = _crash_room_embed('lobby')
@@ -792,7 +814,7 @@ def _reset_crash_room():
         'active': False, 'host_id': None, 'bet_amount': 0,
         'bets': {}, 'cashed': {}, 'crash_at': 1.0, 'mult': 1.0,
         'message': None, 'channel_id': None, 'view': None,
-        'guild_id': None, 'phase': 'idle'
+        'guild_id': None, 'phase': 'idle', 'start_requested': False
     })
 
 
@@ -812,7 +834,8 @@ async def crashroom_cmd(ctx, amount: str):
     crash_room_state.update({
         'active': True, 'host_id': ctx.author.id, 'bet_amount': amount,
         'channel_id': ctx.channel.id, 'bets': {},
-        'cashed': {}, 'phase': 'idle', 'host_label': ctx.author.name
+        'cashed': {}, 'phase': 'idle', 'host_label': ctx.author.name,
+        'start_requested': False
     })
     asyncio.create_task(_run_crash_room(ctx.channel,
                                         ctx.guild.id if ctx.guild else None,
