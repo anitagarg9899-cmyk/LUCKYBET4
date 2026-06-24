@@ -2882,32 +2882,73 @@ async def invites_cmd(ctx, member: discord.Member = None):
     await ctx.send(embed=e)
 
 
+class MonthlyClaimView(discord.ui.View):
+    def __init__(self, author_id):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+
+    @discord.ui.button(label='Claim Monthly', style=discord.ButtonStyle.success, custom_id='claim_monthly', emoji='🎁')
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This isn't your monthly bonus!", ephemeral=True); return
+        data, uid = get_user(self.author_id); now = datetime.now(timezone.utc)
+        current_month = now.strftime('%Y-%m')
+        if data[uid].get('last_monthly') == current_month:
+            next_m = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
+            days = (next_m - now).days
+            e = embed("📅 Monthly Reward", f"⏳ Already claimed this month!\nCome back in **{days} days**.", C.ERROR)
+            await interaction.response.edit_message(embed=e, view=None); return
+        lifetime_wagered = data[uid]['stats'].get('total_wagered', 0)
+        reward = round(lifetime_wagered * 0.0025)
+        if reward < 1:
+            e = embed("📅 Monthly Reward",
+                      f"You need at least **R$400** lifetime wagered to earn a monthly bonus.\n"
+                      f"**Lifetime Wagered:** {lifetime_wagered:,.2f} points",
+                      C.WARNING)
+            await interaction.response.edit_message(embed=e, view=None); return
+        data[uid]['last_monthly'] = current_month
+        data[uid]['balance']      = data[uid].get('balance', 0) + reward
+        data[uid]['bonus_received'] = data[uid].get('bonus_received', 0) + reward
+        save_data(data)
+        e = embed("📅 Monthly Reward Claimed!",
+                  f"🎁 **Claimed:** {reward:,} points\n"
+                  f"📊 **Lifetime Wagered:** {lifetime_wagered:,.2f} points\n"
+                  f"💰 **New Balance:** {fmt(data[uid]['balance'])}",
+                  C.SUCCESS)
+        await interaction.response.edit_message(embed=e, view=None)
+
+
 @bot.command(name='monthly')
 async def monthly(ctx):
     data, uid = get_user(ctx.author.id); now = datetime.now(timezone.utc)
     current_month = now.strftime('%Y-%m')
+    lifetime_wagered = data[uid]['stats'].get('total_wagered', 0)
+    estimated = round(lifetime_wagered * 0.0025)
+
     if data[uid].get('last_monthly') == current_month:
         next_m = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
-        e = embed("📅 Monthly Reward", f"⏳ Already claimed!\nNext in **{(next_m-now).days} days**.", C.ERROR)
-        await ctx.send(embed=e); return
-    wager_since = data[uid]['stats']['total_wagered'] - data[uid].get('wager_at_last_monthly', 0)
-    reward = int(wager_since // 1000)
-    if reward == 0:
+        days = (next_m - now).days
         e = embed("📅 Monthly Reward",
-                  f"Need at least **R$1,000** wagered since last claim.\n"
-                  f"**Wagered since:** R${wager_since:,}\n**Still need:** R${max(0, 1000-wager_since):,}",
-                  C.WARNING)
+                  f"⏳ Already claimed this month!\nCome back in **{days} days**.",
+                  C.ERROR)
         await ctx.send(embed=e); return
-    data[uid]['last_monthly']          = current_month
-    data[uid]['wager_at_last_monthly'] = data[uid]['stats']['total_wagered']
-    data[uid]['balance']               = data[uid].get('balance', 0) + reward
-    data[uid]['bonus_received']        = data[uid].get('bonus_received', 0) + reward
-    save_data(data)
-    e = embed("📅 Monthly Reward Claimed!",
-              f"**Wagered this period:** R${wager_since:,}\n**Reward:** {reward:,} pts\n"
-              f"**New Balance:** {fmt(data[uid]['balance'])}",
-              C.SUCCESS)
-    await ctx.send(embed=e)
+
+    is_first = now.day == 1
+    desc = (
+        f"Your monthly bonus is **0.25% rakeback** on your lifetime wagers!\n"
+        f"📊 **Lifetime Wagered:** {lifetime_wagered:,.2f} points\n"
+        f"🎁 **Estimated Monthly Bonus:** **{estimated:,} points**\n"
+        f"*This bonus can be claimed once every 30 days.*"
+    )
+    if not is_first:
+        next_first = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
+        days = (next_first - now).days
+        desc += f"\n\n⏳ **Claimable on the 1st of next month** — {days} days left."
+        e = embed("📅 Monthly Reward", desc, C.WARNING)
+        await ctx.send(embed=e); return
+
+    e = embed("📅 Monthly Reward", desc, C.SUCCESS)
+    await ctx.send(embed=e, view=MonthlyClaimView(ctx.author.id))
 
 
 @bot.command(name='rakeback')
