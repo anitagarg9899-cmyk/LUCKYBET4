@@ -2898,21 +2898,22 @@ class MonthlyClaimView(discord.ui.View):
             days = (next_m - now).days
             e = embed("📅 Monthly Reward", f"⏳ Already claimed this month!\nCome back in **{days} days**.", C.ERROR)
             await interaction.response.edit_message(embed=e, view=None); return
-        lifetime_wagered = data[uid]['stats'].get('total_wagered', 0)
-        reward = round(lifetime_wagered * 0.0025)
+        wager_since = data[uid]['stats'].get('total_wagered', 0) - data[uid].get('wager_at_last_monthly', 0)
+        reward = round(wager_since * 0.0025)
         if reward < 1:
             e = embed("📅 Monthly Reward",
-                      f"You need at least **R$400** lifetime wagered to earn a monthly bonus.\n"
-                      f"**Lifetime Wagered:** {lifetime_wagered:,.2f} points",
+                      f"You need to wager more since your last claim to earn a bonus.\n"
+                      f"📊 **Wagered since last claim:** {wager_since:,.2f} points",
                       C.WARNING)
             await interaction.response.edit_message(embed=e, view=None); return
-        data[uid]['last_monthly'] = current_month
-        data[uid]['balance']      = data[uid].get('balance', 0) + reward
-        data[uid]['bonus_received'] = data[uid].get('bonus_received', 0) + reward
+        data[uid]['last_monthly']          = current_month
+        data[uid]['wager_at_last_monthly'] = data[uid]['stats']['total_wagered']
+        data[uid]['balance']               = data[uid].get('balance', 0) + reward
+        data[uid]['bonus_received']        = data[uid].get('bonus_received', 0) + reward
         save_data(data)
         e = embed("📅 Monthly Reward Claimed!",
                   f"🎁 **Claimed:** {reward:,} points\n"
-                  f"📊 **Lifetime Wagered:** {lifetime_wagered:,.2f} points\n"
+                  f"📊 **Wagered since last claim:** {wager_since:,.2f} points\n"
                   f"💰 **New Balance:** {fmt(data[uid]['balance'])}",
                   C.SUCCESS)
         await interaction.response.edit_message(embed=e, view=None)
@@ -2922,8 +2923,8 @@ class MonthlyClaimView(discord.ui.View):
 async def monthly(ctx):
     data, uid = get_user(ctx.author.id); now = datetime.now(timezone.utc)
     current_month = now.strftime('%Y-%m')
-    lifetime_wagered = data[uid]['stats'].get('total_wagered', 0)
-    estimated = round(lifetime_wagered * 0.0025)
+    wager_since = data[uid]['stats'].get('total_wagered', 0) - data[uid].get('wager_at_last_monthly', 0)
+    estimated = round(wager_since * 0.0025)
 
     if data[uid].get('last_monthly') == current_month:
         next_m = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
@@ -2935,8 +2936,8 @@ async def monthly(ctx):
 
     is_first = now.day == 1
     desc = (
-        f"Your monthly bonus is **0.25% rakeback** on your lifetime wagers!\n"
-        f"📊 **Lifetime Wagered:** {lifetime_wagered:,.2f} points\n"
+        f"Your monthly bonus is **0.25% rakeback** on wagers since your last claim!\n"
+        f"📊 **Wagered since last claim:** {wager_since:,.2f} points\n"
         f"🎁 **Estimated Monthly Bonus:** **{estimated:,} points**\n"
         f"*This bonus can be claimed once every 30 days.*"
     )
