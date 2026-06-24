@@ -33,6 +33,96 @@ intents.invites = True
 
 bot = commands.Bot(command_prefix='.', intents=intents, help_command=None)
 
+# ── Modern Embed Design System ────────────────────────────────────────────────
+# A cohesive visual identity for every embed in the bot.  Instead of flat
+# title+description boxes, every embed gets:
+#   • A branded header (icon + title in the author slot)
+#   • A structured description with section dividers (━━━━)
+#   • Monospace stat blocks for numbers
+#   • A consistent footer + timestamp
+#   • A semantic color from a curated 10-ramp palette
+
+class C:
+    """Curated color ramps — modern, high-contrast, no purple-by-default."""
+    PRIMARY   = 0x2563EB  # blue-600
+    SECONDARY = 0x0891B2  # cyan-600
+    ACCENT    = 0xD97706  # amber-600
+    SUCCESS   = 0x059669  # emerald-600
+    WARNING   = 0xEA580C  # orange-600
+    ERROR     = 0xDC2626  # red-600
+    NEUTRAL   = 0x475569  # slate-600
+    GOLD      = 0xCA8A04  # yellow-600
+    LOBBY     = 0x7C3AED  # violet-600
+    DANGER    = 0xB91C1C  # red-700
+
+# Map old inline hexes → new palette (so callers passing ints still resolve).
+_LEGACY = {
+    0x00FF88: C.SUCCESS, 0xFF4444: C.ERROR,  0xFFD700: C.ACCENT,
+    0x1E90FF: C.PRIMARY, 0x9B59B6: C.LOBBY,  0xFF5000: C.WARNING,
+    0x888888: C.NEUTRAL,  0x00BFFF: C.SECONDARY, 0x4FC3F7: C.SECONDARY,
+    0xFF8800: C.WARNING,  0xFF6FA5: 0xEC4899, 0x00FF99: C.SUCCESS,
+    0xFF0000: C.ERROR,    0x00E676: C.SUCCESS, 0xF1C40F: C.GOLD,
+    0x2ECC71: C.SUCCESS,  0x3498DB: C.PRIMARY, 0xE74C3C: C.ERROR,
+    0xCD7F32: 0xB45309,   0xC0C0C0: 0x94A3B8, 0x64C8FF: 0x0EA5E9,
+    0xB464FF: C.LOBBY,
+}
+
+def _c(color):
+    if color is None: return C.PRIMARY
+    return _LEGACY.get(color, color) if isinstance(color, int) else color
+
+# Visual building blocks
+BRAND = "LuckyBet"
+DIVIDER = "━━━━━━━━━━━━━━━━━━━━━━━━"
+SP = "\u200b"  # zero-width space for empty fields / spacing
+
+def _section(label, body):
+    """A section header + body, separated by a divider."""
+    return f"**{label}**\n{body}\n{DIVIDER}"
+
+def _stat(label, value):
+    """A monospace stat line: `  Label  value`"""
+    return f"`{label.ljust(10)}  {value}`"
+
+def _stat_grid(stats):
+    """A grid of monospace stat lines."""
+    return "\n".join(_stat(l, v) for l, v in stats)
+
+def embed(title="", description="", color=None, *, icon=None, footer=None,
+          thumbnail=None, image=None, author=None):
+    """Build a modern branded embed.
+
+    Args:
+      title:       Embed title (without icon — icon goes in the author slot).
+      icon:        Emoji/short string shown before the title in the author slot.
+      footer:      Footer text (defaults to brand tagline).
+      thumbnail:   Thumbnail URL.
+      image:       Image URL.
+      author:      Override author name (defaults to "{icon} {title}").
+    """
+    e = discord.Embed(
+        description=description or None,
+        color=_c(color),
+        timestamp=datetime.now(timezone.utc),
+    )
+    # Branded header in the author slot — looks cleaner than a flat title
+    header = author or f"{icon}  {title}" if (icon or title) else None
+    if header:
+        e.set_author(name=header)
+    e.set_footer(text=footer or f"{BRAND}  •  Play responsibly")
+    if thumbnail:
+        e.set_thumbnail(url=thumbnail)
+    if image:
+        e.set_image(url=image)
+    return e
+
+def field_grid(e, fields, inline=True):
+    """Add multiple fields to an embed in one call."""
+    for name, value, *rest in fields:
+        inline_val = rest[0] if rest else inline
+        e.add_field(name=name, value=value, inline=inline_val)
+    return e
+
 DB_FILE      = os.getenv('DATA_FILE', 'user_data.json')
 active_mines = {}
 active_bj    = {}
@@ -397,18 +487,17 @@ async def send_to_history(guild, game, user_name, user_id, bet, won, profit, new
     if not channel:
         return
     emoji = GAME_EMOJIS.get(game, '🎮')
-    color = 0x00FF88 if won else (0xFFD700 if won is None else 0xFF4444)
+    color = C.SUCCESS if won else (C.ACCENT if won is None else C.ERROR)
     if won is True:
-        result_str = f"✅ **WIN** `+R${profit:,}`"
+        result_str = f"✅ **WIN**  `+R${profit:,}`"
     elif won is False:
-        result_str = f"❌ **LOSS** `-R${abs(profit):,}`"
+        result_str = f"❌ **LOSS**  `-R${abs(profit):,}`"
     else:
-        result_str = "🤝 **TIE** `no change`"
-    embed = discord.Embed(color=color, timestamp=datetime.now(timezone.utc))
-    embed.set_author(name=f"{emoji} {game.title()}  ·  {user_name}")
-    embed.description = f"**Bet:** R${bet:,}  ·  {result_str}\n**Balance:** R${new_bal:,}"
+        result_str = "🤝 **TIE**  `no change`"
+    e = embed("", f"**Bet:** `R${bet:,}`  •  {result_str}\n**Balance:** `R${new_bal:,}`",
+              color, icon=emoji, author=f"{emoji}  {game.title()}  •  {user_name}")
     try:
-        await channel.send(embed=embed)
+        await channel.send(embed=e)
     except Exception:
         pass
 
@@ -438,38 +527,40 @@ def gen_crash_point():
 def crash_mult_at(elapsed):
     return round(1.0 + elapsed * 0.12 + (elapsed ** 1.6) * 0.015, 2)
 
-def crash_embed_build(phase, bets, cashed, mult=1.00, crash_at=None, color=0x1E90FF):
+def crash_embed_build(phase, bets, cashed, mult=1.00, crash_at=None, color=None):
     if phase == 'lobby':
-        title = "🚀  Crash — Lobby Open"
-        desc  = f"Game starts in a moment!\nUse `.crash <amount>` to bet now.\n\n"
-        color = 0x9B59B6
+        title = "Crash — Lobby Open"
+        desc  = ("Place your bets — the multiplier climbs once the round starts.\n"
+                 f"Use `.crash <amount>` to join.\n{DIVIDER}\n")
+        color = C.LOBBY
     elif phase == 'running':
-        title = f"🚀  Crash — {mult:.2f}×  FLYING"
-        desc  = f"**Current Multiplier:** `{mult:.2f}×`\nClick **Cash Out** before it crashes!\n\n"
-        color = 0x00FF88 if mult < 3 else (0xFFD700 if mult < 7 else 0xFF5000)
+        title = f"Crash — {mult:.2f}×"
+        desc  = (f"```\n     {mult:.2f}×\n```\n"
+                 "Cash out before it crashes!\n"
+                 f"{DIVIDER}\n")
+        color = C.SUCCESS if mult < 3 else (C.ACCENT if mult < 7 else C.WARNING)
     elif phase == 'crashed':
-        title = f"💥  Crashed at {crash_at:.2f}×"
-        desc  = f"**Crash Point:** `{crash_at:.2f}×`\n\n"
-        color = 0xFF4444
+        title = f"Crashed @ {crash_at:.2f}×"
+        desc  = (f"```\n   💥 {crash_at:.2f}×\n```\n"
+                 f"{DIVIDER}\n")
+        color = C.ERROR
     else:
-        title = "🚀  Crash"; desc = ""; color = 0x1E90FF
+        title = "Crash"; desc = ""; color = C.PRIMARY
 
     if bets:
         lines = []
         for uid, b in bets.items():
             if uid in cashed:
                 c = cashed[uid]; sign = "+" if c['profit'] >= 0 else ""
-                lines.append(f"✅ **{b['username']}** — cashed {c['mult']:.2f}× ({sign}R${c['profit']:,})")
+                lines.append(f"💰 **{b['username']}** cashed @ {c['mult']:.2f}×  `{sign}R${c['profit']:,}`")
             elif phase == 'crashed':
-                lines.append(f"💥 **{b['username']}** — lost R${b['amount']:,}")
+                lines.append(f"💥 **{b['username']}**  `-R${b['amount']:,}`")
             else:
-                lines.append(f"🎲 **{b['username']}** — R${b['amount']:,}")
+                lines.append(f"🎲 **{b['username']}**  `R${b['amount']:,}`")
         desc += "\n".join(lines)
 
-    embed = discord.Embed(title=title, description=desc, color=color)
-    if phase == 'lobby':
-        embed.set_footer(text=f"Game starts in ~{CRASH_LOBBY_SECS}s after first bet")
-    return embed
+    footer = f"Lobby closes ~{CRASH_LOBBY_SECS}s after first bet" if phase == 'lobby' else None
+    return embed(title, desc, color, icon="🚀", footer=footer)
 
 
 class CrashView(discord.ui.View):
@@ -520,7 +611,7 @@ async def run_crash_game(channel, guild_id):
     if not crash_state['bets']:
         crash_state['phase'] = 'idle'
         await crash_state['message'].edit(
-            embed=discord.Embed(title="🚀 Crash — Cancelled", description="No bets placed.", color=0x888888),
+            embed=embed("Crash — Cancelled", "No bets were placed this round.", C.NEUTRAL, icon="🚀"),
             view=None)
         return
 
@@ -700,38 +791,39 @@ def _crash_room_embed(phase):
     host   = crash_room_state.get('host_label', 'Host')
 
     if phase == 'lobby':
-        title = "🚀  Crash Room — Lobby Open"
-        desc  = (f"**Host:** {host}\n**Entry bet:** R${bet:,}\n\n"
-                 f"Click **Join Now** to enter with **R${bet:,}**.\n"
-                 f"Game starts in ~{CRASH_ROOM_LOBBY_SECS}s after first player joins.")
-        color = 0x9B59B6
+        title = "Crash Room — Lobby Open"
+        desc  = (f"```\n  Host     {host}\n  Entry    R${bet:,}\n```\n"
+                 "Click **Join Now** to enter  •  Host can hit **Start Now**\n"
+                 f"{DIVIDER}\n")
+        color = C.LOBBY
     elif phase == 'running':
-        title = f"🚀  Crash Room — {mult:.2f}×  FLYING"
-        desc  = f"**Current Multiplier:** `{mult:.2f}×`\nClick **Cash Out** before it crashes!\n\n"
-        color = 0x00FF88 if mult < 3 else (0xFFD700 if mult < 7 else 0xFF5000)
+        title = f"Crash Room — {mult:.2f}×"
+        desc  = (f"```\n     {mult:.2f}×\n```\n"
+                 "Cash out before it crashes!\n"
+                 f"{DIVIDER}\n")
+        color = C.SUCCESS if mult < 3 else (C.ACCENT if mult < 7 else C.WARNING)
     elif phase == 'crashed':
-        title = f"💥  Crash Room — Crashed at {crash_room_state['crash_at']:.2f}×"
-        desc  = f"**Crash Point:** `{crash_room_state['crash_at']:.2f}×`\n\n"
-        color = 0xFF4444
+        title = f"Crash Room — Crashed @ {crash_room_state['crash_at']:.2f}×"
+        desc  = (f"```\n   💥 {crash_room_state['crash_at']:.2f}×\n```\n"
+                 f"{DIVIDER}\n")
+        color = C.ERROR
     else:
-        title = "🚀  Crash Room"; desc = ""; color = 0x1E90FF
+        title = "Crash Room"; desc = ""; color = C.PRIMARY
 
     if bets:
         lines = []
         for uid, b in bets.items():
             if uid in cashed:
                 c = cashed[uid]; sign = "+" if c['profit'] >= 0 else ""
-                lines.append(f"✅ **{b['username']}** — cashed {c['mult']:.2f}× ({sign}R${c['profit']:,})")
+                lines.append(f"💰 **{b['username']}** cashed @ {c['mult']:.2f}×  `{sign}R${c['profit']:,}`")
             elif phase == 'crashed':
-                lines.append(f"💥 **{b['username']}** — lost R${b['amount']:,}")
+                lines.append(f"💥 **{b['username']}**  `-R${b['amount']:,}`")
             else:
-                lines.append(f"🎲 **{b['username']}** — R${b['amount']:,}")
+                lines.append(f"🎲 **{b['username']}**  `R${b['amount']:,}`")
         desc += "\n".join(lines)
 
-    embed = discord.Embed(title=title, description=desc, color=color)
-    if phase == 'lobby':
-        embed.set_footer(text=f"Entry: R${bet:,}  |  {CRASH_ROOM_LOBBY_SECS}s to start")
-    return embed
+    footer = f"Entry R${bet:,}  •  {CRASH_ROOM_LOBBY_SECS}s to start" if phase == 'lobby' else None
+    return embed(title, desc, color, icon="🚀", footer=footer)
 
 
 async def _run_crash_room(channel, guild_id, host_label):
@@ -754,8 +846,8 @@ async def _run_crash_room(channel, guild_id, host_label):
         crash_room_state.update({'phase': 'idle', 'active': False, 'message': None, 'view': None})
         try:
             await crash_room_state['message'].edit(
-                embed=discord.Embed(title="🚀 Crash Room — Cancelled",
-                                     description="No one joined the room.", color=0x888888),
+                embed=embed("Crash Room — Cancelled",
+                            "No one joined the room in time.", C.NEUTRAL, icon="🚀"),
                 view=None)
         except: pass
         _reset_crash_room()
@@ -855,7 +947,7 @@ def cs(cards):
     return "  ".join("A" if c == 11 else str(c) for c in cards)
 
 def bj_embed(player_cards, dealer_cards, bet, show_dealer=False,
-             title="🃏  Blackjack", color=0x1E90FF, extra=""):
+             title="Blackjack", color=C.PRIMARY, extra=""):
     """Text-only fallback embed (kept for any old callers)."""
     pv = cv(player_cards); dv = cv(dealer_cards)
     desc = (
@@ -864,10 +956,10 @@ def bj_embed(player_cards, dealer_cards, bet, show_dealer=False,
         f"**Bet:** R${bet:,}"
     )
     if extra: desc += f"\n\n{extra}"
-    return discord.Embed(title=title, description=desc, color=color)
+    return embed(title, desc, color, icon="🃏")
 
 
-def bj_card_payload(username, pc, dc, bet, hide_hole, status, color, title, extra=""):
+def bj_card_payload(username, pc, dc, bet, hide_hole, status, color, title, extra="", footer=None):
     """Build (embed, file) using the image card."""
     pv = cv(pc); dv = cv(dc)
     buf = blackjack_card(username, pc, pv, dc, dv, won=(status in ('win', 'blackjack')),
@@ -875,9 +967,8 @@ def bj_card_payload(username, pc, dc, bet, hide_hole, status, color, title, extr
     file = discord.File(buf, filename="bj.png")
     desc = f"**Bet:** R${bet:,}"
     if extra: desc += f"\n\n{extra}"
-    embed = discord.Embed(title=title, description=desc, color=color)
-    embed.set_image(url="attachment://bj.png")
-    return embed, file
+    e = embed(title, desc, color, icon="🃏", image="attachment://bj.png", footer=footer)
+    return e, file
 
 
 class BlackjackView(discord.ui.View):
@@ -920,7 +1011,7 @@ class BlackjackView(discord.ui.View):
             await self._finish(interaction, bust=True)
         else:
             await self._edit(interaction, hide_hole=True, status='playing',
-                             color=0x1E90FF, title="🃏  Blackjack — Hit!", view=self)
+                             color=C.PRIMARY, title="Blackjack — Hit!", view=self)
 
     async def stand_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
@@ -944,7 +1035,7 @@ class BlackjackView(discord.ui.View):
 
         # 1) Reveal hole card first
         await self._edit(interaction, hide_hole=False, status='playing',
-                         color=0xFFD700, title="🃏  Blackjack — Dealer reveals…", view=self)
+                         color=C.ACCENT, title="Blackjack — Dealer reveals…", view=self)
 
         # 2) Dealer draws one card at a time (animated) unless player busted
         if not bust:
@@ -952,7 +1043,7 @@ class BlackjackView(discord.ui.View):
                 await asyncio.sleep(0.9)
                 self.dealer_cards.append(self.deck.pop())
                 await self._edit(interaction, hide_hole=False, status='playing',
-                                 color=0xFFD700, title="🃏  Blackjack — Dealer draws…", view=self)
+                                 color=C.ACCENT, title="Blackjack — Dealer draws…", view=self)
 
         pv = cv(self.player_cards); dv = cv(self.dealer_cards)
         if bust or pv > 21:   won = False; result = "Bust! You went over 21."; status = 'bust'
@@ -963,19 +1054,19 @@ class BlackjackView(discord.ui.View):
 
         if won is True:
             new_bal = self.start_balance + self.bet; add_to_stats(self.user_id, True, self.bet)
-            set_user_balance(self.user_id, new_bal); color = 0x00FF88
+            set_user_balance(self.user_id, new_bal); color = C.SUCCESS
             extra = f"🎉 **{result}**\n+R${self.bet:,}  |  New Balance: {fmt(new_bal)}"
             if interaction.guild: asyncio.create_task(assign_rank_role(interaction.guild, self.user_id))
         elif won is False:
             new_bal = max(0, self.start_balance - self.bet); add_to_stats(self.user_id, False, self.bet)
-            set_user_balance(self.user_id, new_bal); color = 0xFF4444
+            set_user_balance(self.user_id, new_bal); color = C.ERROR
             extra = f"😢 **{result}**\n-R${self.bet:,}  |  New Balance: {fmt(new_bal)}"
         else:
-            new_bal = self.start_balance; color = 0xFFD700
+            new_bal = self.start_balance; color = C.ACCENT
             extra = f"🤝 **{result}**\nNo change  |  Balance: {fmt(new_bal)}"
 
         await asyncio.sleep(0.5)
-        title = "🃏  Blackjack — " + ("WIN!" if won is True else ("LOSS" if won is False else "TIE"))
+        title = "Blackjack — " + ("WIN!" if won is True else ("LOSS" if won is False else "TIE"))
         await self._edit(interaction, hide_hole=False, status=status,
                          color=color, title=title, extra=extra, view=self)
         profit = self.bet if won is True else (-self.bet if won is False else 0)
@@ -994,7 +1085,7 @@ def mines_multiplier(mines_count, picks):
     return round(mult * 0.97, 2)
 
 def make_mines_embed(bet, mines_count, picks, client_seed, public_hash,
-                     server_seed=None, status=None, color=0x00BFFF):
+                     server_seed=None, status=None, color=C.SECONDARY):
     mult = mines_multiplier(mines_count, picks)
     profit = round(bet * mult) - bet if picks > 0 else 0
     safe = MINES_TOTAL - mines_count
@@ -1003,7 +1094,7 @@ def make_mines_embed(bet, mines_count, picks, client_seed, public_hash,
             f"**Public Hash:** `{public_hash}`\n**Client Seed:** `{client_seed}`\n")
     desc += f"**Server Seed:** `{server_seed}`\n" if server_seed else "**Server Seed:** `Hidden`\n"
     if status: desc += f"\n{status}"
-    return discord.Embed(title="⛏️  Mines", description=desc, color=color)
+    return embed("Mines", desc, color, icon="⛏️")
 
 
 class MinesView(discord.ui.View):
@@ -1034,7 +1125,7 @@ class MinesView(discord.ui.View):
                 active_mines.pop(self.user_id, None); self.stop()
                 status = f"💥 Hit a mine! Lost **{self.bet:,}** pts  |  New Balance: **R${new_bal:,}**"
                 embed = make_mines_embed(self.bet, self.mines_count, len(self.revealed), self.client_seed,
-                                         self.public_hash, server_seed=self.server_seed, status=status, color=0xFF4444)
+                                         self.public_hash, server_seed=self.server_seed, status=status, color=C.ERROR)
                 await interaction.response.edit_message(embed=embed, view=self)
                 asyncio.create_task(send_to_history(interaction.guild, 'mines', self.user_name, self.user_id, self.bet, False, self.bet, new_bal))
             else:
@@ -1063,7 +1154,7 @@ class MinesView(discord.ui.View):
         active_mines.pop(self.user_id, None); self._reveal_all(); self.stop()
         status = f"✅ Cashed out **{winnings:,}** pts  |  New Balance: **R${new_bal:,}**"
         embed = make_mines_embed(self.bet, self.mines_count, picks, self.client_seed, self.public_hash,
-                                  server_seed=self.server_seed, status=status, color=0x00FF88)
+                                  server_seed=self.server_seed, status=status, color=C.SUCCESS)
         await interaction.response.edit_message(embed=embed, view=self)
         if interaction.guild: asyncio.create_task(assign_rank_role(interaction.guild, self.user_id))
         asyncio.create_task(send_to_history(interaction.guild, 'mines', self.user_name, self.user_id, self.bet, True, profit, new_bal))
@@ -1251,9 +1342,8 @@ async def addbal(ctx, member: discord.Member, amount: int):
     if new_bal < 0: await ctx.send(f"❌ Cannot reduce {member.name}'s balance below R$0!"); return
     set_user_balance(member.id, new_bal)
     img_buf = addbal_card(ctx.author.name, member.name, amount, old_bal, new_bal)
-    embed = discord.Embed(title="🔧  Admin — Balance Updated", color=0x00FF88 if amount > 0 else 0xFF4444)
-    embed.set_image(url="attachment://addbal.png")
-    await ctx.send(embed=embed, file=send_image(img_buf, 'addbal.png'))
+    e = embed("Admin — Balance Updated", color=C.SUCCESS if amount > 0 else C.ERROR, icon="🔧", image="attachment://addbal.png")
+    await ctx.send(embed=e, file=send_image(img_buf, 'addbal.png'))
 
 @addbal.error
 async def addbal_error(ctx, error):
@@ -1272,13 +1362,12 @@ async def removebal(ctx, member: discord.Member, amount: int):
     new_bal = old_bal - amount
     set_user_balance(member.id, new_bal)
     img_buf = addbal_card(ctx.author.name, member.name, -amount, old_bal, new_bal)
-    embed = discord.Embed(
-        title="🔧  Admin — Balance Removed",
-        description=f"Removed **R${amount:,}** from {member.mention}\n**New Balance:** {fmt(new_bal)}",
-        color=0xFF4444
+    e = embed(
+        "Admin — Balance Removed",
+        f"Removed **R${amount:,}** from {member.mention}\n**New Balance:** {fmt(new_bal)}",
+        color=C.ERROR, icon="🔧", image="attachment://addbal.png",
     )
-    embed.set_image(url="attachment://addbal.png")
-    await ctx.send(embed=embed, file=send_image(img_buf, 'addbal.png'))
+    await ctx.send(embed=e, file=send_image(img_buf, 'addbal.png'))
 
 @removebal.error
 async def removebal_error(ctx, error):
@@ -1293,10 +1382,10 @@ async def updwithdraw(ctx, member: discord.Member, amount: int):
     if amount < 0: await ctx.send("❌ Amount cannot be negative!"); return
     data, uid = get_user(member.id)
     data[uid]['total_withdrawn'] = data[uid].get('total_withdrawn', 0) + amount; save_data(data)
-    embed = discord.Embed(title="🏦 Withdraw Updated", description=(
+    e = embed("Withdraw Updated", (
         f"**User:** {member.name}\n**Added:** {amount:,} pts\n"
-        f"**Total Withdrawn:** {data[uid]['total_withdrawn']:,} pts"), color=0x00FF88)
-    await ctx.send(embed=embed)
+        f"**Total Withdrawn:** {data[uid]['total_withdrawn']:,} pts"), color=C.SUCCESS, icon="🏦")
+    await ctx.send(embed=e)
 
 
 @bot.command(name='updatedeposit')
@@ -1308,10 +1397,10 @@ async def updatedeposit(ctx, member: discord.Member, amount: float):
     data, uid = get_user(member.id)
     data[uid]['total_deposited'] = data[uid].get('total_deposited', 0.0) + amount
     save_data(data)
-    embed = discord.Embed(title="💰 Deposit Updated", description=(
+    e = embed("Deposit Updated", (
         f"**User:** {member.name}\n**Added:** ${amount:.2f}\n"
-        f"**Total Deposited:** ${data[uid]['total_deposited']:.2f}"), color=0x00FF88)
-    await ctx.send(embed=embed)
+        f"**Total Deposited:** ${data[uid]['total_deposited']:.2f}"), color=C.SUCCESS, icon="💰")
+    await ctx.send(embed=e)
 
 
 @updatedeposit.error
@@ -1374,18 +1463,15 @@ class PromoMultiplierView(discord.ui.View):
             item.disabled = True
         await interaction.response.edit_message(view=self)
 
-        embed = discord.Embed(
-            title="🎁  Promo Applied!",
-            color=0x00FF88
-        )
-        embed.add_field(name="User", value=self.member.mention, inline=False)
-        embed.add_field(name="Points Added", value=f"R${self.amount:,}", inline=True)
-        embed.add_field(name="Multiplier", value=f"{multiplier}×", inline=True)
-        embed.add_field(name="Wager Requirement", value=f"R${wager_req:,}", inline=True)
-        embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
-        embed.set_footer(text="User must wager this amount before withdrawing.")
+        e = embed("Promo Applied!", color=C.SUCCESS, icon="🎁",
+                  footer="User must wager this amount before withdrawing.")
+        e.add_field(name="User", value=self.member.mention, inline=False)
+        e.add_field(name="Points Added", value=f"R${self.amount:,}", inline=True)
+        e.add_field(name="Multiplier", value=f"{multiplier}×", inline=True)
+        e.add_field(name="Wager Requirement", value=f"R${wager_req:,}", inline=True)
+        e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
 
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=e)
 
     async def on_timeout(self):
         for item in self.children:
@@ -1403,19 +1489,15 @@ async def promo(ctx, member: discord.Member, amount: int):
         await ctx.send("❌ Amount must be positive!")
         return
 
-    embed = discord.Embed(
-        title="🎁  Promo — Select Multiplier",
-        description=(
-            f"**User:** {member.mention}\n"
-            f"**Amount:** R${amount:,}\n\n"
-            f"Select a wager multiplier requirement.\n"
-            f"The user must wager `amount × multiplier` before withdrawing."
-        ),
-        color=0x9B59B6
-    )
+    e = embed("Promo — Select Multiplier", (
+        f"**User:** {member.mention}\n"
+        f"**Amount:** R${amount:,}\n\n"
+        f"Select a wager multiplier requirement.\n"
+        f"The user must wager `amount × multiplier` before withdrawing."
+    ), C.LOBBY, icon="🎁")
 
     view = PromoMultiplierView(ctx.author.id, member, amount)
-    view.message = await ctx.send(embed=embed, view=view)
+    view.message = await ctx.send(embed=e, view=view)
 
 
 @promo.error
@@ -1445,22 +1527,20 @@ async def wager_status(ctx):
     bar_filled = int(progress // 5)
     bar = "█" * bar_filled + "░" * (20 - bar_filled)
 
-    embed = discord.Embed(
-        title="🔒  Wager Requirement Status",
-        color=0xFFD700 if remaining > 0 else 0x00FF88
-    )
-    embed.add_field(name="Requirement", value=f"R${wager_req:,}", inline=True)
-    embed.add_field(name="Wagered", value=f"R${wagered_amount:,}", inline=True)
-    embed.add_field(name="Remaining", value=f"R${remaining:,}", inline=True)
-    embed.add_field(name="Progress", value=f"`{bar}` {progress:.1f}%", inline=False)
+    e = embed("Wager Requirement Status", None,
+              C.ACCENT if remaining > 0 else C.SUCCESS, icon="🔒")
+    e.add_field(name="Requirement", value=f"R${wager_req:,}", inline=True)
+    e.add_field(name="Wagered", value=f"R${wagered_amount:,}", inline=True)
+    e.add_field(name="Remaining", value=f"R${remaining:,}", inline=True)
+    e.add_field(name="Progress", value=f"`{bar}` {progress:.1f}%", inline=False)
 
     if remaining <= 0:
-        embed.description = "🎉 **Complete!** You can now withdraw."
-        embed.color = 0x00FF88
+        e.description = "🎉 **Complete!** You can now withdraw."
+        e.color = C.SUCCESS
     else:
-        embed.description = "Play games to meet the requirement before withdrawing."
+        e.description = "Play games to meet the requirement before withdrawing."
 
-    await ctx.send(embed=embed)
+    await ctx.send(embed=e)
 
 
 @bot.command(name='clearwager')
@@ -1471,12 +1551,10 @@ async def clearwager(ctx, member: discord.Member):
     data[uid]['wager_requirement'] = 0
     data[uid]['wager_since_promo'] = 0
     save_data(data)
-    embed = discord.Embed(
-        title="🔓  Wager Requirement Cleared",
-        description=f"Cleared wager requirement for {member.mention}\n**Previous:** R${old_req:,}",
-        color=0x00FF88
-    )
-    await ctx.send(embed=embed)
+    e = embed("Wager Requirement Cleared",
+              f"Cleared wager requirement for {member.mention}\n**Previous:** R${old_req:,}",
+              C.SUCCESS, icon="🔓")
+    await ctx.send(embed=e)
 
 
 @clearwager.error
@@ -1508,16 +1586,13 @@ async def wagerstatus_admin(ctx, member: discord.Member):
     bar_filled = int(progress // 5)
     bar = "█" * bar_filled + "░" * (20 - bar_filled)
 
-    embed = discord.Embed(
-        title=f"🔒  Wager Status — {member.name}",
-        color=0xFFD700
-    )
-    embed.add_field(name="Requirement", value=f"R${wager_req:,}", inline=True)
-    embed.add_field(name="Wagered", value=f"R${wagered_amount:,}", inline=True)
-    embed.add_field(name="Remaining", value=f"R${remaining:,}", inline=True)
-    embed.add_field(name="Progress", value=f"`{bar}` {progress:.1f}%", inline=False)
+    e = embed(f"Wager Status — {member.name}", None, C.ACCENT, icon="🔒")
+    e.add_field(name="Requirement", value=f"R${wager_req:,}", inline=True)
+    e.add_field(name="Wagered", value=f"R${wagered_amount:,}", inline=True)
+    e.add_field(name="Remaining", value=f"R${remaining:,}", inline=True)
+    e.add_field(name="Progress", value=f"`{bar}` {progress:.1f}%", inline=False)
 
-    await ctx.send(embed=embed)
+    await ctx.send(embed=e)
 
 
 @wagerstatus_admin.error
@@ -1546,8 +1621,8 @@ async def resetstats(ctx):
         ud['stats'] = {'wins': 0, 'losses': 0, 'total_wagered': 0, 'total_lost': 0}
         ud['rakeback_available'] = 0.0; ud['wager_at_last_monthly'] = 0; count += 1
     save_data(data)
-    embed = discord.Embed(title="🔄 Stats Reset", description=f"Reset stats for **{count}** players.", color=0xFF8800)
-    await ctx.send(embed=embed)
+    e = embed("Stats Reset", f"Reset stats for **{count}** players.", color=C.WARNING, icon="🔄")
+    await ctx.send(embed=e)
 
 @resetstats.error
 async def resetstats_error(ctx, error):
@@ -1564,13 +1639,13 @@ async def setrank(ctx, rank_name: str, role: discord.Role = None):
     if 'rank_roles' not in cfg: cfg['rank_roles'] = {}
     if role is None:
         cfg['rank_roles'].pop(rn, None); save_config(cfg)
-        embed = discord.Embed(title="🏅 Rank Role Removed",
-                              description=f"Cleared role for **{rank_name.title()}**.", color=0xFF8800)
+        e = embed("Rank Role Removed",
+                  f"Cleared role for **{rank_name.title()}**.", color=C.WARNING, icon="🏅")
     else:
         cfg['rank_roles'][rn] = str(role.id); save_config(cfg)
-        embed = discord.Embed(title="🏅 Rank Role Set",
-                              description=f"**{rank_name.title()}** rank → {role.mention}", color=0x00FF88)
-    await ctx.send(embed=embed)
+        e = embed("Rank Role Set",
+                  f"**{rank_name.title()}** rank → {role.mention}", color=C.SUCCESS, icon="🏅")
+    await ctx.send(embed=e)
 
 @setrank.error
 async def setrank_error(ctx, error):
@@ -1588,9 +1663,9 @@ async def rankroles_cmd(ctx):
         role_id = rr.get(rk)
         role_str = f"<@&{role_id}>" if role_id else "*(not set)*"
         lines.append(f"{rname}: {role_str}")
-    embed = discord.Embed(title="🏅 Rank Role Configuration", description="\n".join(lines), color=0x9B59B6)
-    embed.set_footer(text="Use .setrank <rank> @role to configure  |  .setrank <rank> to clear")
-    await ctx.send(embed=embed)
+    e = embed("Rank Role Configuration", "\n".join(lines), color=C.LOBBY, icon="🏅",
+              footer="Use .setrank <rank> @role to configure  |  .setrank <rank> to clear")
+    await ctx.send(embed=e)
 
 
 @bot.command(name='sethistory')
@@ -1601,12 +1676,12 @@ async def sethistory(ctx, channel: discord.TextChannel = None):
     cfg = get_config()
     cfg['history_channel'] = str(channel.id)
     save_config(cfg)
-    embed = discord.Embed(
-        title="📋 Bet History Channel Set",
-        description=f"Every bet result will now be logged to {channel.mention}.",
-        color=0x00FF88
+    e = embed(
+        "Bet History Channel Set",
+        f"Every bet result will now be logged to {channel.mention}.",
+        color=C.SUCCESS, icon="📋",
     )
-    await ctx.send(embed=embed)
+    await ctx.send(embed=e)
 
 @sethistory.error
 async def sethistory_error(ctx, error):
@@ -1623,12 +1698,12 @@ async def setdepositlog(ctx, channel: discord.TextChannel = None):
     cfg = get_config()
     cfg['deposit_log_channel'] = str(channel.id)
     save_config(cfg)
-    embed = discord.Embed(
-        title="💸 Deposit Log Channel Set",
-        description=f"Every confirmed deposit will now be logged to {channel.mention}.",
-        color=0x00FF88
+    e = embed(
+        "Deposit Log Channel Set",
+        f"Every confirmed deposit will now be logged to {channel.mention}.",
+        color=C.SUCCESS, icon="💸",
     )
-    await ctx.send(embed=embed)
+    await ctx.send(embed=e)
 
 @setdepositlog.error
 async def setdepositlog_error(ctx, error):
@@ -1645,8 +1720,8 @@ async def cleardepositlog(ctx):
         await ctx.send("❌ No deposit log channel is currently set."); return
     del cfg['deposit_log_channel']
     save_config(cfg)
-    embed = discord.Embed(title="💸 Deposit Logging Disabled", description="Deposit logging has been turned off.", color=0xFF8800)
-    await ctx.send(embed=embed)
+    e = embed("Deposit Logging Disabled", "Deposit logging has been turned off.", color=C.WARNING, icon="💸")
+    await ctx.send(embed=e)
 
 @cleardepositlog.error
 async def cleardepositlog_error(ctx, error):
@@ -1661,8 +1736,8 @@ async def clearhistory(ctx):
         await ctx.send("❌ No history channel is currently set."); return
     del cfg['history_channel']
     save_config(cfg)
-    embed = discord.Embed(title="📋 Bet History Disabled", description="Bet history logging has been turned off.", color=0xFF8800)
-    await ctx.send(embed=embed)
+    e = embed("Bet History Disabled", "Bet history logging has been turned off.", color=C.WARNING, icon="📋")
+    await ctx.send(embed=e)
 
 @clearhistory.error
 async def clearhistory_error(ctx, error):
@@ -1707,23 +1782,19 @@ async def coinflip(ctx, amount: str, choice: str):
 
     anim_buf = coinflip_anim_card(ctx.author.name)
 
-    embed = discord.Embed(
-        title="🪙 Coin Flip",
-        description=frames[0],
-        color=0xFFD700
-    )
+    e = embed("Coin Flip", frames[0], C.ACCENT, icon="🪙")
 
-    embed.set_image(url="attachment://coinflip_anim.png")
+    e.set_image(url="attachment://coinflip_anim.png")
 
     msg = await ctx.send(
-        embed=embed,
+        embed=e,
         file=send_image(anim_buf, "coinflip_anim.png")
     )
 
     for frame in frames[1:]:
         await asyncio.sleep(0.45)
-        embed.description = frame
-        await msg.edit(embed=embed)
+        e.description = frame
+        await msg.edit(embed=e)
 
     await asyncio.sleep(0.35)
 
@@ -1738,36 +1809,34 @@ async def coinflip(ctx, amount: str, choice: str):
     if ctx.guild:
         asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
 
-    embed = discord.Embed(
-        title="🎉 Coin Flip — YOU WON!" if won else "😢 Coin Flip — YOU LOST",
-        color=0x00FF88 if won else 0xFF4444
-    )
+    e = embed("🎉 Coin Flip — YOU WON!" if won else "❌ Coin Flip — Lost",
+              color=C.SUCCESS if won else C.ERROR, icon="🪙")
 
-    embed.add_field(
+    e.add_field(
         name="You chose",
         value=choice.upper(),
         inline=True
     )
 
-    embed.add_field(
+    e.add_field(
         name="Result",
         value=result.upper(),
         inline=True
     )
 
-    embed.add_field(
+    e.add_field(
         name="Change",
         value=f"{'+' if won else '-'}R${amount:,}",
         inline=True
     )
 
-    embed.add_field(
+    e.add_field(
         name="New Balance",
         value=fmt(new_bal),
         inline=False
     )
 
-    pf_add_field(embed, server_seed, client_seed, public_hash, "coinflip")
+    pf_add_field(e, server_seed, client_seed, public_hash, "coinflip")
 
     img_buf = coinflip_card(
         ctx.author.name,
@@ -1776,10 +1845,10 @@ async def coinflip(ctx, amount: str, choice: str):
         won
     )
 
-    embed.set_image(url="attachment://coinflip.png")
+    e.set_image(url="attachment://coinflip.png")
 
     await msg.edit(
-        embed=embed,
+        embed=e,
         attachments=[send_image(img_buf, "coinflip.png")]
     )
 
@@ -1801,11 +1870,11 @@ async def balance(ctx, member: discord.Member = None):
     target = member or ctx.author
     bal = get_user_balance(target.id)
     img_buf = balance_card(target.name, target.id, bal)
-    embed = discord.Embed(title=f"ℹ️  {target.name}'s Balance",
-                          description=f"{bal:,} points  |  R${bal:,}  |  ${bal * POINTS_TO_USD:.2f}",
-                          color=0x4FC3F7)
-    embed.set_image(url="attachment://balance.png")
-    await ctx.send(embed=embed, file=send_image(img_buf, 'balance.png'))
+    e = embed(f"{target.name}'s Balance",
+              f"{bal:,} points  |  R${bal:,}  |  ${bal * POINTS_TO_USD:.2f}",
+              C.SECONDARY, icon="ℹ️")
+    e.set_image(url="attachment://balance.png")
+    await ctx.send(embed=e, file=send_image(img_buf, 'balance.png'))
 
 
 
@@ -1820,24 +1889,25 @@ async def dice(ctx, amount: str, guess: int):
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     server_seed, client_seed, public_hash = generate_seeds()
     faces = ["⚀","⚁","⚂","⚃","⚄","⚅"]
-    embed = discord.Embed(title="🎲  Dice Roll", description="🎲 Rolling...", color=0xFFD700)
-    msg = await ctx.send(embed=embed)
+    e = embed("Dice Roll", "🎲 Rolling...", C.ACCENT, icon="🎲")
+    msg = await ctx.send(embed=e)
     for _ in range(4):
-        await asyncio.sleep(0.4); embed.description = f"🎲 {faces[random.randint(0,5)]}  Rolling..."; await msg.edit(embed=embed)
+        await asyncio.sleep(0.4); e.description = f"🎲 {faces[random.randint(0,5)]}  Rolling..."; await msg.edit(embed=e)
     await asyncio.sleep(0.3)
     roll = pf_dice_roll(server_seed, client_seed); won = guess == roll
     new_bal = (bal + amount * 5) if won else (bal - amount)
     add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
     if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
-    embed = discord.Embed(title=f"🎉 Dice — WIN! (×5)" if won else "😢 Dice — LOST", color=0x00FF88 if won else 0xFF4444)
-    embed.add_field(name="Your guess", value=f"{guess} {faces[guess-1]}", inline=True)
-    embed.add_field(name="Rolled",     value=f"{roll} {faces[roll-1]}",   inline=True)
-    embed.add_field(name="Change",     value=f"{'+'if won else '-'}R${amount*(5 if won else 1):,}", inline=True)
-    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
-    pf_add_field(embed, server_seed, client_seed, public_hash, "dice")
+    e = embed(f"🎉 Dice — WIN! (×5)" if won else "❌ Dice — Lost",
+              color=C.SUCCESS if won else C.ERROR, icon="🎲")
+    e.add_field(name="Your guess", value=f"{guess} {faces[guess-1]}", inline=True)
+    e.add_field(name="Rolled",     value=f"{roll} {faces[roll-1]}",   inline=True)
+    e.add_field(name="Change",     value=f"{'+'if won else '-'}R${amount*(5 if won else 1):,}", inline=True)
+    e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(e, server_seed, client_seed, public_hash, "dice")
     img_buf = dice_card(ctx.author.name, guess, roll, won)
-    embed.set_image(url="attachment://dice.png")
-    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'dice.png')])
+    e.set_image(url="attachment://dice.png")
+    await msg.edit(embed=e, attachments=[send_image(img_buf, 'dice.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'dice', ctx.author.name, ctx.author.id, amount, won, amount*5 if won else amount, new_bal))
 
 
@@ -1858,25 +1928,26 @@ async def limbo(ctx, amount: str, target: str = None):
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     server_seed, client_seed, public_hash = generate_seeds()
     result_mult = pf_limbo(server_seed, client_seed)
-    embed = discord.Embed(title="📈  Limbo", description="📈 Climbing...", color=0xFFD700)
-    msg = await ctx.send(embed=embed)
+    e = embed("Limbo", "📈 Climbing...", C.ACCENT, icon="📈")
+    msg = await ctx.send(embed=e)
     for step in (1.00, max(1.00, result_mult * 0.4), max(1.00, result_mult * 0.75)):
-        await asyncio.sleep(0.4); embed.description = f"📈 `{step:.2f}×`  Climbing..."; await msg.edit(embed=embed)
+        await asyncio.sleep(0.4); e.description = f"📈 `{step:.2f}×`  Climbing..."; await msg.edit(embed=e)
     await asyncio.sleep(0.3)
     won = result_mult >= target_mult
     profit = round(amount * target_mult) - amount if won else amount
     new_bal = bal + profit if won else bal - amount
     add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
     if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
-    embed = discord.Embed(title=f"🎉 Limbo — WIN! (×{target_mult:g})" if won else "😢 Limbo — LOST", color=0x00FF88 if won else 0xFF4444)
-    embed.add_field(name="Your target", value=f"{target_mult:.2f}×", inline=True)
-    embed.add_field(name="Result",      value=f"{result_mult:.2f}×", inline=True)
-    embed.add_field(name="Change",      value=f"{'+' if won else '-'}R${(profit if won else amount):,}", inline=True)
-    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
-    pf_add_field(embed, server_seed, client_seed, public_hash, "limbo")
+    e = embed(f"🎉 Limbo — WIN! (×{target_mult:g})" if won else "❌ Limbo — Lost",
+              color=C.SUCCESS if won else C.ERROR, icon="📈")
+    e.add_field(name="Your target", value=f"{target_mult:.2f}×", inline=True)
+    e.add_field(name="Result",      value=f"{result_mult:.2f}×", inline=True)
+    e.add_field(name="Change",      value=f"{'+' if won else '-'}R${(profit if won else amount):,}", inline=True)
+    e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(e, server_seed, client_seed, public_hash, "limbo")
     img_buf = limbo_card(ctx.author.name, target_mult, result_mult, won)
-    embed.set_image(url="attachment://limbo.png")
-    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'limbo.png')])
+    e.set_image(url="attachment://limbo.png")
+    await msg.edit(embed=e, attachments=[send_image(img_buf, 'limbo.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'limbo', ctx.author.name, ctx.author.id, amount, won, profit if won else amount, new_bal))
 
 
@@ -1896,10 +1967,10 @@ async def rps(ctx, amount: str, choice: str = None):
     server_seed, client_seed, public_hash = generate_seeds()
     bot_move = pf_rps(server_seed, client_seed)
     EMO = {'rock': '🪨', 'paper': '📄', 'scissors': '✂️'}
-    embed = discord.Embed(title="✂️  Rock · Paper · Scissors", description="Rock... Paper... Scissors...", color=0xFFD700)
-    msg = await ctx.send(embed=embed)
+    e = embed("Rock · Paper · Scissors", "Rock... Paper... Scissors...", C.ACCENT, icon="✂️")
+    msg = await ctx.send(embed=e)
     for f in ("🪨", "📄", "✂️"):
-        await asyncio.sleep(0.4); embed.description = f"Shoot!  {f}"; await msg.edit(embed=embed)
+        await asyncio.sleep(0.4); e.description = f"Shoot!  {f}"; await msg.edit(embed=e)
     await asyncio.sleep(0.3)
     beats = {'rock': 'scissors', 'paper': 'rock', 'scissors': 'paper'}
     if player == bot_move: outcome = 'tie'
@@ -1910,17 +1981,17 @@ async def rps(ctx, amount: str, choice: str = None):
     if outcome != 'tie':
         add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
         if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
-    title = "🎉 RPS — YOU WON! (×2)" if outcome == 'win' else ("😢 RPS — YOU LOST" if outcome == 'lose' else "🤝 RPS — TIE (push)")
-    color = 0x00FF88 if outcome == 'win' else (0xFF4444 if outcome == 'lose' else 0xFFD700)
-    embed = discord.Embed(title=title, color=color)
-    embed.add_field(name="You", value=f"{EMO[player]} {player.title()}", inline=True)
-    embed.add_field(name="Bot", value=f"{EMO[bot_move]} {bot_move.title()}", inline=True)
-    embed.add_field(name="Change", value="±R$0" if outcome == 'tie' else f"{'+' if won else '-'}R${amount:,}", inline=True)
-    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
-    pf_add_field(embed, server_seed, client_seed, public_hash, "rps")
+    title = "🎉 RPS — YOU WON! (×2)" if outcome == 'win' else ("❌ RPS — Lost" if outcome == 'lose' else "🤝 RPS — TIE (push)")
+    color = C.SUCCESS if outcome == 'win' else (C.ERROR if outcome == 'lose' else C.ACCENT)
+    e = embed(title, color=color, icon="✂️")
+    e.add_field(name="You", value=f"{EMO[player]} {player.title()}", inline=True)
+    e.add_field(name="Bot", value=f"{EMO[bot_move]} {bot_move.title()}", inline=True)
+    e.add_field(name="Change", value="±R$0" if outcome == 'tie' else f"{'+' if won else '-'}R${amount:,}", inline=True)
+    e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(e, server_seed, client_seed, public_hash, "rps")
     img_buf = rps_card(ctx.author.name, player, bot_move, outcome)
-    embed.set_image(url="attachment://rps.png")
-    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'rps.png')])
+    e.set_image(url="attachment://rps.png")
+    await msg.edit(embed=e, attachments=[send_image(img_buf, 'rps.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'rps', ctx.author.name, ctx.author.id, amount, won, amount if outcome != 'tie' else 0, new_bal))
 
 
@@ -1941,25 +2012,26 @@ async def slide(ctx, amount: str, target: str = None):
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     server_seed, client_seed, public_hash = generate_seeds()
     result_mult = pf_slide(server_seed, client_seed)
-    embed = discord.Embed(title="🎢  Slide", description="🎢 Sliding...", color=0xFFD700)
-    msg = await ctx.send(embed=embed)
+    e = embed("Slide", "🎢 Sliding...", C.ACCENT, icon="🎢")
+    msg = await ctx.send(embed=e)
     for step in (result_mult * 0.5, result_mult * 0.85, result_mult):
-        await asyncio.sleep(0.4); embed.description = f"🎢 `{step:.2f}×`  Sliding..."; await msg.edit(embed=embed)
+        await asyncio.sleep(0.4); e.description = f"🎢 `{step:.2f}×`  Sliding..."; await msg.edit(embed=e)
     await asyncio.sleep(0.3)
     won = result_mult >= target_mult
     profit = round(amount * target_mult) - amount if won else amount
     new_bal = bal + profit if won else bal - amount
     add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
     if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
-    embed = discord.Embed(title=f"🎉 Slide — WIN! (×{target_mult:g})" if won else "😢 Slide — LOST", color=0x00FF88 if won else 0xFF4444)
-    embed.add_field(name="Your target", value=f"{target_mult:.2f}×", inline=True)
-    embed.add_field(name="Landed on",   value=f"{result_mult:.2f}×", inline=True)
-    embed.add_field(name="Change",      value=f"{'+' if won else '-'}R${(profit if won else amount):,}", inline=True)
-    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
-    pf_add_field(embed, server_seed, client_seed, public_hash, "slide")
+    e = embed(f"🎉 Slide — WIN! (×{target_mult:g})" if won else "❌ Slide — Lost",
+              color=C.SUCCESS if won else C.ERROR, icon="🎢")
+    e.add_field(name="Your target", value=f"{target_mult:.2f}×", inline=True)
+    e.add_field(name="Landed on",   value=f"{result_mult:.2f}×", inline=True)
+    e.add_field(name="Change",      value=f"{'+' if won else '-'}R${(profit if won else amount):,}", inline=True)
+    e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(e, server_seed, client_seed, public_hash, "slide")
     img_buf = slide_card(ctx.author.name, target_mult, result_mult, won)
-    embed.set_image(url="attachment://slide.png")
-    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'slide.png')])
+    e.set_image(url="attachment://slide.png")
+    await msg.edit(embed=e, attachments=[send_image(img_buf, 'slide.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'slide', ctx.author.name, ctx.author.id, amount, won, profit if won else amount, new_bal))
 
 
@@ -1972,10 +2044,10 @@ async def tight(ctx, amount: str):
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     server_seed, client_seed, public_hash = generate_seeds()
     result_mult = pf_tight(server_seed, client_seed)
-    embed = discord.Embed(title="🗜️  Tight", description="🗜️ Tightening...", color=0xFFD700)
-    msg = await ctx.send(embed=embed)
+    e = embed("Tight", "🗜️ Tightening...", C.ACCENT, icon="🗜️")
+    msg = await ctx.send(embed=e)
     for step in (result_mult * 0.4, result_mult * 0.8, result_mult):
-        await asyncio.sleep(0.4); embed.description = f"🗜️ `{step:.2f}×`  Tightening..."; await msg.edit(embed=embed)
+        await asyncio.sleep(0.4); e.description = f"🗜️ `{step:.2f}×`  Tightening..."; await msg.edit(embed=e)
     await asyncio.sleep(0.3)
     payout = round(amount * result_mult)
     won = payout >= amount
@@ -1983,15 +2055,16 @@ async def tight(ctx, amount: str):
     new_bal = bal - amount + payout
     add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
     if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
-    embed = discord.Embed(title=f"🎉 Tight — {result_mult:.2f}× PROFIT!" if won else f"😢 Tight — {result_mult:.2f}× (loss)", color=0x00FF88 if won else 0xFF4444)
-    embed.add_field(name="Multiplier", value=f"{result_mult:.2f}×", inline=True)
-    embed.add_field(name="Payout",     value=fmt(payout), inline=True)
-    embed.add_field(name="Change",     value=f"{'+' if profit >= 0 else '-'}R${abs(profit):,}", inline=True)
-    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
-    pf_add_field(embed, server_seed, client_seed, public_hash, "tight")
+    e = embed(f"🎉 Tight — {result_mult:.2f}× PROFIT!" if won else f"❌ Tight — {result_mult:.2f}× (loss)",
+              color=C.SUCCESS if won else C.ERROR, icon="🗜️")
+    e.add_field(name="Multiplier", value=f"{result_mult:.2f}×", inline=True)
+    e.add_field(name="Payout",     value=fmt(payout), inline=True)
+    e.add_field(name="Change",     value=f"{'+' if profit >= 0 else '-'}R${abs(profit):,}", inline=True)
+    e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(e, server_seed, client_seed, public_hash, "tight")
     img_buf = tight_card(ctx.author.name, result_mult, won)
-    embed.set_image(url="attachment://tight.png")
-    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'tight.png')])
+    e.set_image(url="attachment://tight.png")
+    await msg.edit(embed=e, attachments=[send_image(img_buf, 'tight.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'tight', ctx.author.name, ctx.author.id, amount, won, profit if won else (amount - payout), new_bal))
 
 
@@ -2006,9 +2079,9 @@ async def war(ctx, amount: str):
     p, dealer = pf_war_cards(server_seed, client_seed)
     RANK_NAMES = {11: 'J', 12: 'Q', 13: 'K', 14: 'A'}
     def cname(r): return RANK_NAMES.get(r, str(r))
-    embed = discord.Embed(title="⚔️  War", description="⚔️ Drawing cards...", color=0xFFD700)
-    msg = await ctx.send(embed=embed)
-    await asyncio.sleep(0.6); embed.description = f"You draw **{cname(p)}**..."; await msg.edit(embed=embed)
+    e = embed("War", "⚔️ Drawing cards...", C.ACCENT, icon="⚔️")
+    msg = await ctx.send(embed=e)
+    await asyncio.sleep(0.6); e.description = f"You draw **{cname(p)}**..."; await msg.edit(embed=e)
     await asyncio.sleep(0.6)
     if p > dealer: outcome = 'win'
     elif p < dealer: outcome = 'lose'
@@ -2018,17 +2091,17 @@ async def war(ctx, amount: str):
     if outcome != 'tie':
         add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
         if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
-    title = "🎉 War — YOU WON! (×2)" if outcome == 'win' else ("😢 War — DEALER WINS" if outcome == 'lose' else "🤝 War — TIE (push)")
-    color = 0x00FF88 if outcome == 'win' else (0xFF4444 if outcome == 'lose' else 0xFFD700)
-    embed = discord.Embed(title=title, color=color)
-    embed.add_field(name="Your card",   value=f"**{cname(p)}**", inline=True)
-    embed.add_field(name="Dealer card", value=f"**{cname(dealer)}**", inline=True)
-    embed.add_field(name="Change", value="±R$0" if outcome == 'tie' else f"{'+' if won else '-'}R${amount:,}", inline=True)
-    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
-    pf_add_field(embed, server_seed, client_seed, public_hash, "war")
+    title = "🎉 War — YOU WON! (×2)" if outcome == 'win' else ("❌ War — Dealer Wins" if outcome == 'lose' else "🤝 War — TIE (push)")
+    color = C.SUCCESS if outcome == 'win' else (C.ERROR if outcome == 'lose' else C.ACCENT)
+    e = embed(title, color=color, icon="⚔️")
+    e.add_field(name="Your card",   value=f"**{cname(p)}**", inline=True)
+    e.add_field(name="Dealer card", value=f"**{cname(dealer)}**", inline=True)
+    e.add_field(name="Change", value="±R$0" if outcome == 'tie' else f"{'+' if won else '-'}R${amount:,}", inline=True)
+    e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(e, server_seed, client_seed, public_hash, "war")
     img_buf = war_card(ctx.author.name, p, dealer, outcome)
-    embed.set_image(url="attachment://war.png")
-    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'war.png')])
+    e.set_image(url="attachment://war.png")
+    await msg.edit(embed=e, attachments=[send_image(img_buf, 'war.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'war', ctx.author.name, ctx.author.id, amount, won, amount if outcome != 'tie' else 0, new_bal))
 
 
@@ -2043,12 +2116,12 @@ async def valentines(ctx, amount: str):
     final = pf_valentines(server_seed, client_seed)
     SPIN = "💞"; RING = "💍"
     def disp(r1, r2, r3): return f"┌─────────────┐\n│  {r1}  {r2}  {r3}  │\n└─────────────┘"
-    embed = discord.Embed(title="💘  Valentine's Slots", color=0xFF6FA5)
-    embed.description = f"```\n{disp(SPIN, SPIN, SPIN)}\n```\nSpinning with love..."
-    msg = await ctx.send(embed=embed)
+    e = embed("Valentine's Slots", color=0xEC4899, icon="💘")
+    e.description = f"```\n{disp(SPIN, SPIN, SPIN)}\n```\nSpinning with love..."
+    msg = await ctx.send(embed=e)
     for step in range(1, 4):
         await asyncio.sleep(0.6); rv = [final[i] for i in range(step)]; pv = [SPIN] * (3 - step)
-        embed.description = f"```\n{disp(*(rv + pv))}\n```"; await msg.edit(embed=embed)
+        e.description = f"```\n{disp(*(rv + pv))}\n```"; await msg.edit(embed=e)
     await asyncio.sleep(0.4)
     r1, r2, r3 = final
     if r1 == r2 == r3:
@@ -2061,14 +2134,15 @@ async def valentines(ctx, amount: str):
     new_bal = bal + winnings if won else bal - amount
     add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
     if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
-    embed = discord.Embed(title=f"🎉 Valentine's — {label}" if won else "😢 Valentine's — No Match", color=0x00FF88 if won else 0xFF4444)
-    embed.description = f"```\n{disp(r1, r2, r3)}\n```"
-    embed.add_field(name="Won" if won else "Lost", value=fmt(winnings if won else amount), inline=True)
-    embed.add_field(name="New Balance", value=fmt(new_bal), inline=True)
-    pf_add_field(embed, server_seed, client_seed, public_hash, "valentines")
+    e = embed(f"🎉 Valentine's — {label}" if won else "❌ Valentine's — No Match",
+              color=C.SUCCESS if won else C.ERROR, icon="💘")
+    e.description = f"```\n{disp(r1, r2, r3)}\n```"
+    e.add_field(name="Won" if won else "Lost", value=fmt(winnings if won else amount), inline=True)
+    e.add_field(name="New Balance", value=fmt(new_bal), inline=True)
+    pf_add_field(e, server_seed, client_seed, public_hash, "valentines")
     img_buf = valentines_card(ctx.author.name, final, won, label)
-    embed.set_image(url="attachment://valentines.png")
-    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'valentines.png')])
+    e.set_image(url="attachment://valentines.png")
+    await msg.edit(embed=e, attachments=[send_image(img_buf, 'valentines.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'valentines', ctx.author.name, ctx.author.id, amount, won, winnings if won else amount, new_bal))
 
 
@@ -2082,12 +2156,12 @@ async def twist(ctx, amount: str):
     server_seed, client_seed, public_hash = generate_seeds()
     rolls, result_mult = pf_twist(server_seed, client_seed)
     faces = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
-    embed = discord.Embed(title="🌀  Twist", description="🌀 Rolling the dice...", color=0xFFD700)
-    msg = await ctx.send(embed=embed)
+    e = embed("Twist", "🌀 Rolling the dice...", C.ACCENT, icon="🌀")
+    msg = await ctx.send(embed=e)
     shown = []
     for r in rolls:
         await asyncio.sleep(0.5); shown.append(faces[r - 1])
-        embed.description = f"🌀 {' '.join(shown)}  moving..."; await msg.edit(embed=embed)
+        e.description = f"🌀 {' '.join(shown)}  moving..."; await msg.edit(embed=e)
     await asyncio.sleep(0.3)
     payout = round(amount * result_mult)
     won = payout >= amount
@@ -2095,16 +2169,17 @@ async def twist(ctx, amount: str):
     new_bal = bal - amount + payout
     add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
     if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
-    embed = discord.Embed(title=f"🎉 Twist — {result_mult:.2f}× PROFIT!" if won else f"😢 Twist — {result_mult:.2f}× (loss)", color=0x00FF88 if won else 0xFF4444)
-    embed.add_field(name="Rolls", value=f"{' '.join(f'{r}{faces[r-1]}' for r in rolls)}  = {sum(rolls)}", inline=False)
-    embed.add_field(name="Tile multiplier", value=f"{result_mult:.2f}×", inline=True)
-    embed.add_field(name="Payout", value=fmt(payout), inline=True)
-    embed.add_field(name="Change", value=f"{'+' if profit >= 0 else '-'}R${abs(profit):,}", inline=True)
-    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
-    pf_add_field(embed, server_seed, client_seed, public_hash, "twist")
+    e = embed(f"🎉 Twist — {result_mult:.2f}× PROFIT!" if won else f"❌ Twist — {result_mult:.2f}× (loss)",
+              color=C.SUCCESS if won else C.ERROR, icon="🌀")
+    e.add_field(name="Rolls", value=f"{' '.join(f'{r}{faces[r-1]}' for r in rolls)}  = {sum(rolls)}", inline=False)
+    e.add_field(name="Tile multiplier", value=f"{result_mult:.2f}×", inline=True)
+    e.add_field(name="Payout", value=fmt(payout), inline=True)
+    e.add_field(name="Change", value=f"{'+' if profit >= 0 else '-'}R${abs(profit):,}", inline=True)
+    e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(e, server_seed, client_seed, public_hash, "twist")
     img_buf = twist_card(ctx.author.name, rolls, result_mult, won)
-    embed.set_image(url="attachment://twist.png")
-    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'twist.png')])
+    e.set_image(url="attachment://twist.png")
+    await msg.edit(embed=e, attachments=[send_image(img_buf, 'twist.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'twist', ctx.author.name, ctx.author.id, amount, won, profit if won else (amount - payout), new_bal))
 
 
@@ -2139,15 +2214,14 @@ class TreasureView(discord.ui.View):
                         item.style = discord.ButtonStyle.success if won else discord.ButtonStyle.danger
             self.stop()
             if interaction.guild: asyncio.create_task(assign_rank_role(interaction.guild, self.user_id))
-            embed = discord.Embed(
-                title=f"🎉 Treasure Hunt — {mult:.2f}× PROFIT!" if won else f"😢 Treasure Hunt — {mult:.2f}× (loss)",
-                color=0x00FF88 if won else 0xFF4444)
-            embed.add_field(name="Chest opened", value=f"#{idx+1} → {mult:.2f}×", inline=True)
-            embed.add_field(name="Payout", value=fmt(payout), inline=True)
-            embed.add_field(name="Change", value=f"{'+' if profit >= 0 else '-'}R${abs(profit):,}", inline=True)
-            embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
-            pf_add_field(embed, self.server_seed, self.client_seed, self.public_hash, "treasurehunt")
-            await interaction.response.edit_message(embed=embed, view=self)
+            e = embed(f"🎉 Treasure Hunt — {mult:.2f}× PROFIT!" if won else f"❌ Treasure Hunt — {mult:.2f}× (loss)",
+                      color=C.SUCCESS if won else C.ERROR, icon="💰")
+            e.add_field(name="Chest opened", value=f"#{idx+1} → {mult:.2f}×", inline=True)
+            e.add_field(name="Payout", value=fmt(payout), inline=True)
+            e.add_field(name="Change", value=f"{'+' if profit >= 0 else '-'}R${abs(profit):,}", inline=True)
+            e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+            pf_add_field(e, self.server_seed, self.client_seed, self.public_hash, "treasurehunt")
+            await interaction.response.edit_message(embed=e, view=self)
             asyncio.create_task(send_to_history(interaction.guild, 'treasurehunt', self.user_name, self.user_id, self.bet, won, profit if won else (self.bet - payout), new_bal))
         return callback
 
@@ -2162,38 +2236,39 @@ async def treasurehunt(ctx, amount: str):
     server_seed, client_seed, public_hash = generate_seeds()
     mults = pf_treasure(server_seed, client_seed, 3)
     view = TreasureView(ctx.author.id, ctx.author.name, amount, mults, server_seed, client_seed, public_hash)
-    embed = discord.Embed(title="💰  Treasure Hunt", color=0xFFD700, description=(
-        f"Bet: **{fmt(amount)}**\n\nPick a chest! Each holds a hidden multiplier of up to **2.5×**.\n"
-        "Your payout = bet × the chest you open."))
-    embed.set_footer(text="One pick — choose wisely!")
-    await ctx.send(embed=embed, view=view)
+    e = embed("Treasure Hunt", C.ACCENT, icon="💰",
+              description=(
+                  f"Bet: **{fmt(amount)}**\n\nPick a chest! Each holds a hidden multiplier of up to **2.5×**.\n"
+                  "Your payout = bet × the chest you open."),
+              footer="One pick — choose wisely!")
+    await ctx.send(embed=e, view=view)
 
 
-def make_tower_embed(bet, diff, rows_cleared, client_seed, public_hash, server_seed=None, status=None, color=0x1E90FF):
+def make_tower_embed(bet, diff, rows_cleared, client_seed, public_hash, server_seed=None, status=None, color=C.PRIMARY):
     tiles, safe = TOWER_DIFFS[diff]
     cur = tower_multiplier(diff, rows_cleared)
     nxt = tower_multiplier(diff, rows_cleared + 1)
-    embed = discord.Embed(title="🗼  Tower Climb", color=color)
     lines = []
     for r in range(TOWER_ROWS - 1, -1, -1):
         if r < rows_cleared: marker = "🟩 " * tiles
         elif r == rows_cleared and status is None: marker = "⬜ " * tiles + " ⬅️"
         else: marker = "⬛ " * tiles
         lines.append(f"`R{r+1}` {marker}")
-    embed.description = "\n".join(lines)
-    embed.add_field(name="Bet", value=fmt(bet), inline=True)
-    embed.add_field(name="Difficulty", value=f"{diff.title()} ({safe}/{tiles} safe)", inline=True)
-    embed.add_field(name="Rows cleared", value=str(rows_cleared), inline=True)
-    embed.add_field(name="Current", value=f"{cur:.2f}× = {fmt(round(bet*cur))}", inline=True)
+    footer = None
+    if not server_seed:
+        footer = f"Client Seed: {client_seed}  |  Hash: {public_hash[:16]}…"
+    e = embed("Tower Climb", "\n".join(lines), color, icon="🗼", footer=footer)
+    e.add_field(name="Bet", value=fmt(bet), inline=True)
+    e.add_field(name="Difficulty", value=f"{diff.title()} ({safe}/{tiles} safe)", inline=True)
+    e.add_field(name="Rows cleared", value=str(rows_cleared), inline=True)
+    e.add_field(name="Current", value=f"{cur:.2f}× = {fmt(round(bet*cur))}", inline=True)
     if rows_cleared < TOWER_ROWS:
-        embed.add_field(name="Next row", value=f"{nxt:.2f}×", inline=True)
+        e.add_field(name="Next row", value=f"{nxt:.2f}×", inline=True)
     if status:
-        embed.add_field(name="Result", value=status, inline=False)
+        e.add_field(name="Result", value=status, inline=False)
     if server_seed:
-        pf_add_field(embed, server_seed, client_seed, public_hash, "tower")
-    else:
-        embed.set_footer(text=f"Client Seed: {client_seed}  |  Hash: {public_hash[:16]}…")
-    return embed
+        pf_add_field(e, server_seed, client_seed, public_hash, "tower")
+    return e
 
 
 class TowerView(discord.ui.View):
@@ -2235,7 +2310,7 @@ class TowerView(discord.ui.View):
                 self.stop()
                 status = f"💥 Hit a bomb on row {self.row+1}! Lost **{self.bet:,}** pts  |  New Balance: **R${new_bal:,}**"
                 embed = make_tower_embed(self.bet, self.diff, self.row, self.client_seed, self.public_hash,
-                                         server_seed=self.server_seed, status=status, color=0xFF4444)
+                                         server_seed=self.server_seed, status=status, color=C.ERROR)
                 await interaction.response.edit_message(embed=embed, view=self)
                 asyncio.create_task(send_to_history(interaction.guild, 'tower', self.user_name, self.user_id, self.bet, False, self.bet, new_bal))
             else:
@@ -2248,7 +2323,7 @@ class TowerView(discord.ui.View):
                     if interaction.guild: asyncio.create_task(assign_rank_role(interaction.guild, self.user_id))
                     status = f"🏆 Reached the top! Won **{winnings:,}** pts ({mult:.2f}×)  |  New Balance: **R${new_bal:,}**"
                     embed = make_tower_embed(self.bet, self.diff, self.row, self.client_seed, self.public_hash,
-                                             server_seed=self.server_seed, status=status, color=0x00FF88)
+                                             server_seed=self.server_seed, status=status, color=C.SUCCESS)
                     await interaction.response.edit_message(embed=embed, view=self)
                     asyncio.create_task(send_to_history(interaction.guild, 'tower', self.user_name, self.user_id, self.bet, True, profit, new_bal))
                 else:
@@ -2270,7 +2345,7 @@ class TowerView(discord.ui.View):
         if interaction.guild: asyncio.create_task(assign_rank_role(interaction.guild, self.user_id))
         status = f"✅ Cashed out **{winnings:,}** pts ({mult:.2f}×)  |  New Balance: **R${new_bal:,}**"
         embed = make_tower_embed(self.bet, self.diff, self.row, self.client_seed, self.public_hash,
-                                 server_seed=self.server_seed, status=status, color=0x00FF88)
+                                 server_seed=self.server_seed, status=status, color=C.SUCCESS)
         await interaction.response.edit_message(embed=embed, view=self)
         asyncio.create_task(send_to_history(interaction.guild, 'tower', self.user_name, self.user_id, self.bet, True, profit, new_bal))
 
@@ -2308,26 +2383,26 @@ async def tower(ctx, amount: str):
     if amount <= 0: await ctx.send("❌ Bet must be positive!"); return
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     view = TowerStartView(ctx.author.id, ctx.author.name, amount)
-    embed = discord.Embed(title="🗼  Tower Climb", color=0x1E90FF, description=(
+    e = embed("Tower Climb", (
         f"Bet: **{fmt(amount)}**\n\nChoose a difficulty to start climbing. Pick a safe tile each row to "
         "grow your multiplier — but one tile per row is a bomb. Cash out any time!\n\n"
-        "🟢 **Easy** — 3/4 safe\n🟡 **Medium** — 2/3 safe\n🔴 **Hard** — 1/2 safe"))
-    await ctx.send(embed=embed, view=view)
+        "🟢 **Easy** — 3/4 safe\n🟡 **Medium** — 2/3 safe\n🔴 **Hard** — 1/2 safe"), C.PRIMARY, icon="🗼")
+    await ctx.send(embed=e, view=view)
 
 
 TTT_WIN_LINES = [(0, 1, 2), (3, 4, 5), (6, 7, 8), (0, 3, 6), (1, 4, 7), (2, 5, 8), (0, 4, 8), (2, 4, 6)]
 
 
 def make_ttt_embed(p1, p2, turn_mark, status=None):
-    embed = discord.Embed(title="#️⃣  Tic Tac Toe", color=0x9B59B6)
-    embed.add_field(name="❌ Player X", value=p1.mention, inline=True)
-    embed.add_field(name="⭕ Player O", value=p2.mention, inline=True)
     if status:
-        embed.description = status
+        desc = status
     else:
         cur = p1 if turn_mark == 'X' else p2
-        embed.description = f"It's {cur.mention}'s turn ({turn_mark})"
-    return embed
+        desc = f"It's {cur.mention}'s turn ({turn_mark})"
+    e = embed("Tic Tac Toe", desc, C.LOBBY, icon="#️⃣")
+    e.add_field(name="❌ Player X", value=p1.mention, inline=True)
+    e.add_field(name="⭕ Player O", value=p2.mention, inline=True)
+    return e
 
 
 class TicTacToeView(discord.ui.View):
@@ -2396,12 +2471,12 @@ async def slots(ctx, amount: str):
     SPIN = "🌀"; GEM = "💎"
     final = pf_slots_spin(server_seed, client_seed)
     def disp(r1,r2,r3): return f"┌─────────────┐\n│  {r1}  {r2}  {r3}  │\n└─────────────┘"
-    embed = discord.Embed(title="🎰  Slot Machine", color=0xFFD700)
-    embed.description = f"```\n{disp(SPIN,SPIN,SPIN)}\n```\nSpinning..."
-    msg = await ctx.send(embed=embed)
+    e = embed("Slot Machine", C.ACCENT, icon="🎰")
+    e.description = f"```\n{disp(SPIN,SPIN,SPIN)}\n```\nSpinning..."
+    msg = await ctx.send(embed=e)
     for step in range(1, 4):
         await asyncio.sleep(0.6); rv = [final[i] for i in range(step)]; pv = [SPIN]*(3-step)
-        embed.description = f"```\n{disp(*(rv+pv))}\n```"; await msg.edit(embed=embed)
+        e.description = f"```\n{disp(*(rv+pv))}\n```"; await msg.edit(embed=e)
     await asyncio.sleep(0.4)
     r1,r2,r3 = final
     if r1==r2==r3: winnings=amount*(100 if r1==GEM else 10); won=True; label="💎 JACKPOT ×100" if r1==GEM else "✨ Triple ×10"
@@ -2410,14 +2485,15 @@ async def slots(ctx, amount: str):
     new_bal = bal + winnings if won else bal - amount
     add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
     if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
-    embed = discord.Embed(title=f"🎉 Slots — {label}" if won else "😢 Slots — No Match", color=0x00FF88 if won else 0xFF4444)
-    embed.description = f"```\n{disp(r1,r2,r3)}\n```"
-    embed.add_field(name="Won" if won else "Lost", value=fmt(winnings if won else amount), inline=True)
-    embed.add_field(name="New Balance", value=fmt(new_bal), inline=True)
-    pf_add_field(embed, server_seed, client_seed, public_hash, "slots")
+    e = embed(f"🎉 Slots — {label}" if won else "❌ Slots — No Match",
+              color=C.SUCCESS if won else C.ERROR, icon="🎰")
+    e.description = f"```\n{disp(r1,r2,r3)}\n```"
+    e.add_field(name="Won" if won else "Lost", value=fmt(winnings if won else amount), inline=True)
+    e.add_field(name="New Balance", value=fmt(new_bal), inline=True)
+    pf_add_field(e, server_seed, client_seed, public_hash, "slots")
     img_buf = slots_card(ctx.author.name, final, won, label)
-    embed.set_image(url="attachment://slots.png")
-    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'slots.png')])
+    e.set_image(url="attachment://slots.png")
+    await msg.edit(embed=e, attachments=[send_image(img_buf, 'slots.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'slots', ctx.author.name, ctx.author.id, amount, won, winnings if won else amount, new_bal))
 
 
@@ -2431,10 +2507,10 @@ async def roulette(ctx, amount: str, choice: str):
     if amount > bal: await ctx.send(f"❌ Insufficient balance! You have {fmt(bal)}"); return
     server_seed, client_seed, public_hash = generate_seeds()
     frames = ["🔴 🔵 🟢 🔴 ⚪","⚪ 🔴 🔵 🟢 🔴","🔴 ⚪ 🔴 🔵 🟢","🟢 🔴 ⚪ 🔴 🔵"]
-    embed = discord.Embed(title="🎡  Roulette", description=f"Spinning...\n{frames[0]}", color=0xFFD700)
-    msg = await ctx.send(embed=embed)
+    e = embed("Roulette", f"Spinning...\n{frames[0]}", C.ACCENT, icon="🎡")
+    msg = await ctx.send(embed=e)
     for frame in frames[1:]:
-        await asyncio.sleep(0.45); embed.description = f"Spinning...\n{frame}"; await msg.edit(embed=embed)
+        await asyncio.sleep(0.45); e.description = f"Spinning...\n{frame}"; await msg.edit(embed=e)
     await asyncio.sleep(0.4)
     spin = pf_roulette_spin(server_seed, client_seed)
     if spin == 0: rc = "green"; parity = "—"; won = False
@@ -2443,15 +2519,16 @@ async def roulette(ctx, amount: str, choice: str):
     add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
     if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
     ci = "🔴" if rc=="red" else ("⚫" if rc=="black" else "🟢")
-    embed = discord.Embed(title="🎉 Roulette — WIN! (×2)" if won else "😢 Roulette — LOST", color=0x00FF88 if won else 0xFF4444)
-    embed.add_field(name="Landed", value=f"{ci} {spin} ({rc}/{parity})", inline=True)
-    embed.add_field(name="You bet", value=choice.upper(), inline=True)
-    embed.add_field(name="Change",  value=f"{'+'if won else '-'}R${amount:,}", inline=True)
-    embed.add_field(name="New Balance", value=fmt(new_bal), inline=False)
-    pf_add_field(embed, server_seed, client_seed, public_hash, "roulette")
+    e = embed("🎉 Roulette — WIN! (×2)" if won else "❌ Roulette — Lost",
+              color=C.SUCCESS if won else C.ERROR, icon="🎡")
+    e.add_field(name="Landed", value=f"{ci} {spin} ({rc}/{parity})", inline=True)
+    e.add_field(name="You bet", value=choice.upper(), inline=True)
+    e.add_field(name="Change",  value=f"{'+'if won else '-'}R${amount:,}", inline=True)
+    e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
+    pf_add_field(e, server_seed, client_seed, public_hash, "roulette")
     img_buf = roulette_card(ctx.author.name, choice, spin, rc, won)
-    embed.set_image(url="attachment://roulette.png")
-    await msg.edit(embed=embed, attachments=[send_image(img_buf, 'roulette.png')])
+    e.set_image(url="attachment://roulette.png")
+    await msg.edit(embed=e, attachments=[send_image(img_buf, 'roulette.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'roulette', ctx.author.name, ctx.author.id, amount, won, amount, new_bal))
 
 
@@ -2475,14 +2552,14 @@ async def blackjack_cmd(ctx, amount: str):
         # Step 1: show with hole hidden
         embed1, file1 = bj_card_payload(ctx.author.name, pc, dc, amount,
                                         hide_hole=True, status='playing',
-                                        color=0x1E90FF, title="🃏  Blackjack — Dealing…")
+                                        color=C.PRIMARY, title="Blackjack — Dealing…")
         msg = await ctx.send(embed=embed1, file=file1)
         await asyncio.sleep(0.9)
         # Step 2: reveal + BLACKJACK banner
         embed2, file2 = bj_card_payload(ctx.author.name, pc, dc, amount,
                                         hide_hole=False, status='blackjack',
-                                        color=0x00FF88,
-                                        title="🃏  Blackjack — BLACKJACK! (×2.5)",
+                                        color=C.SUCCESS,
+                                        title="Blackjack — BLACKJACK! (×2.5)",
                                         extra=f"+R${winnings:,}  |  New Balance: {fmt(new_bal)}")
         pf_add_field(embed2, server_seed, client_seed, public_hash, "blackjack")
         await msg.edit(embed=embed2, attachments=[file2])
@@ -2493,8 +2570,8 @@ async def blackjack_cmd(ctx, amount: str):
     view = BlackjackView(ctx.author.id, ctx.author.name, amount, bal, pc, dc, deck)
     embed, file = bj_card_payload(ctx.author.name, pc, dc, amount,
                                   hide_hole=True, status='playing',
-                                  color=0x1E90FF, title="🃏  Blackjack")
-    embed.set_footer(text=f"👊 Hit  |  🛑 Stand  |  ⬆️ Double Down  |  🔐 Seed: {client_seed[:8]}… Hash: {public_hash[:12]}…")
+                                  color=C.PRIMARY, title="Blackjack",
+                                  footer=f"👊 Hit  |  🛑 Stand  |  ⬆️ Double Down  |  🔐 Seed: {client_seed[:8]}… Hash: {public_hash[:12]}…")
     await ctx.send(embed=embed, file=file, view=view)
 
 
@@ -2517,7 +2594,7 @@ async def mines_cmd(ctx, amount: str, mine_count: int = 3):
 @bot.command(name='verify')
 async def verify(ctx, game: str = None, server_seed: str = None, client_seed: str = None, extra: str = None):
     if not game or not server_seed or not client_seed:
-        embed = discord.Embed(title="🔐 Provably Fair — Verify", color=0x00BFFF, description=(
+        e = embed("Provably Fair — Verify", color=C.SECONDARY, icon="🔐", description=(
             "Verify any game result using its seeds.\n\n"
             "**Usage:**\n"
             "`.verify coinflip <server_seed> <client_seed>`\n"
@@ -2534,15 +2611,15 @@ async def verify(ctx, game: str = None, server_seed: str = None, client_seed: st
             "`.verify mines <server_seed> <client_seed> <mine_count>`\n\n"
             "The **Server Seed** and **Client Seed** are shown at the bottom of every game result."
         ))
-        await ctx.send(embed=embed); return
+        await ctx.send(embed=e); return
 
     game = game.lower()
     computed_hash = hashlib.sha256(server_seed.encode()).hexdigest()
 
-    embed = discord.Embed(title=f"🔐 Verify — {game.title()}", color=0x00BFFF)
-    embed.add_field(name="Server Seed",   value=f"`{server_seed}`",    inline=False)
-    embed.add_field(name="Client Seed",   value=f"`{client_seed}`",    inline=False)
-    embed.add_field(name="Hash (SHA-256)", value=f"`{computed_hash}`", inline=False)
+    e = embed(f"Verify — {game.title()}", color=C.SECONDARY, icon="🔐")
+    e.add_field(name="Server Seed",   value=f"`{server_seed}`",    inline=False)
+    e.add_field(name="Client Seed",   value=f"`{client_seed}`",    inline=False)
+    e.add_field(name="Hash (SHA-256)", value=f"`{computed_hash}`", inline=False)
 
     if game == "coinflip":
         result = pf_coinflip(server_seed, client_seed)
@@ -2596,8 +2673,8 @@ async def verify(ctx, game: str = None, server_seed: str = None, client_seed: st
     else:
         embed.add_field(name="❌ Unknown game", value=f"Supported: `coinflip`, `dice`, `slots`, `roulette`, `limbo`, `slide`, `tight`, `twist`, `rps`, `war`, `valentines`, `mines`, `jackpot`", inline=False)
 
-    embed.set_footer(text="Hash = SHA-256(server_seed) — you can verify this yourself at any SHA-256 tool.")
-    await ctx.send(embed=embed)
+    e.set_footer(text="Hash = SHA-256(server_seed) — you can verify this yourself at any SHA-256 tool.")
+    await ctx.send(embed=e)
 
 
 # ── Rewards ───────────────────────────────────────────────────────────────────
@@ -2663,14 +2740,14 @@ async def code_cmd(ctx, code_input: str = None):
     hours     = int(time_left.total_seconds() // 3600)
     minutes   = int((time_left.total_seconds() % 3600) // 60)
 
-    embed = discord.Embed(title="🎁 Code Redeemed!", color=0x00FF88)
-    embed.add_field(name="Code",      value=f"`{code_input}`",          inline=True)
-    embed.add_field(name="Reward",    value=f"+R${reward:,}",           inline=True)
-    embed.add_field(name="New Balance", value=fmt(new_bal),             inline=True)
-    embed.add_field(name="Uses Left", value=f"{uses_left}/{c['max_uses']}", inline=True)
-    embed.add_field(name="Expires",   value=f"in {hours}h {minutes}m", inline=True)
-    embed.set_footer(text=f"Redeemed by {ctx.author.name}")
-    await ctx.send(embed=embed)
+    e = embed("Code Redeemed!", color=C.SUCCESS, icon="🎁",
+              footer=f"Redeemed by {ctx.author.name}")
+    e.add_field(name="Code",      value=f"`{code_input}`",          inline=True)
+    e.add_field(name="Reward",    value=f"+R${reward:,}",           inline=True)
+    e.add_field(name="New Balance", value=fmt(new_bal),             inline=True)
+    e.add_field(name="Uses Left", value=f"{uses_left}/{c['max_uses']}", inline=True)
+    e.add_field(name="Expires",   value=f"in {hours}h {minutes}m", inline=True)
+    await ctx.send(embed=e)
 
 
 @bot.command(name='addcode')
@@ -2708,19 +2785,19 @@ async def addcode(ctx, code: str = None, reward: int = None, uses: int = None, d
     }
     save_codes(codes)
 
-    embed = discord.Embed(title="✅ Code Created", color=0x00FF88)
-    embed.add_field(name="Code", value=f"`{code}`", inline=True)
-    embed.add_field(name="Reward", value=f"R${reward:,}", inline=True)
-    embed.add_field(name="Uses", value=str(uses), inline=True)
-    embed.add_field(name="Expires", value=f"in {days} day(s)", inline=True)
+    e = embed("Code Created", color=C.SUCCESS, icon="✅")
+    e.add_field(name="Code", value=f"`{code}`", inline=True)
+    e.add_field(name="Reward", value=f"R${reward:,}", inline=True)
+    e.add_field(name="Uses", value=str(uses), inline=True)
+    e.add_field(name="Expires", value=f"in {days} day(s)", inline=True)
 
     req_parts = []
     if req_deposited > 0: req_parts.append(f"${req_deposited} deposited")
     if req_wagered > 0: req_parts.append(f"R${req_wagered:,} wagered")
     if req_parts:
-        embed.add_field(name="Requirement", value=" or ".join(req_parts), inline=False)
+        e.add_field(name="Requirement", value=" or ".join(req_parts), inline=False)
 
-    await ctx.send(embed=embed)
+    await ctx.send(embed=e)
 
 
 @addcode.error
@@ -2757,7 +2834,7 @@ async def codes_cmd(ctx):
     now   = datetime.now(timezone.utc)
     if not codes:
         await ctx.send("📋 No codes exist yet. Use `.addcode` to create one."); return
-    embed = discord.Embed(title="📋 Active Promo Codes", color=0x9B59B6)
+    e = embed("Active Promo Codes", color=C.LOBBY, icon="📋")
     shown = 0
     for name, c in codes.items():
         if not isinstance(c, dict):
@@ -2778,7 +2855,7 @@ async def codes_cmd(ctx):
             h         = int(td.total_seconds() // 3600)
             m         = int((td.total_seconds() % 3600) // 60)
             exp_str   = "Expired" if expired else f"Expires in {h}h {m}m"
-            embed.add_field(
+            e.add_field(
                 name=f"`{name}`",
                 value=f"R${reward:,} reward  ·  {status}\n{exp_str}",
                 inline=False
@@ -2788,7 +2865,7 @@ async def codes_cmd(ctx):
             continue
     if shown == 0:
         await ctx.send("📋 No valid codes found. Use `.addcode` to create one."); return
-    await ctx.send(embed=embed)
+    await ctx.send(embed=e)
 
 @codes_cmd.error
 async def codes_cmd_error(ctx, error):
@@ -2809,23 +2886,19 @@ async def daily(ctx):
         if diff.total_seconds() < 86400:
             rem = timedelta(seconds=86400) - diff
             h = int(rem.total_seconds()//3600); m = int((rem.total_seconds()%3600)//60)
-            embed = discord.Embed(title="🎁 Daily Reward",
-                                  description=f"⏳ Come back in **{h}h {m}m**!", color=0xFF4444)
-            await ctx.send(embed=embed); return
+            e = embed("Daily Reward", f"⏳ Come back in **{h}h {m}m**!", C.ERROR, icon="🎁")
+            await ctx.send(embed=e); return
         
     DAILY = 5
     data[uid]['last_daily']     = now.isoformat()
     data[uid]['balance']        = data[uid].get('balance', 0) + DAILY
     data[uid]['bonus_received'] = data[uid].get('bonus_received', 0) + DAILY
     save_data(data)
-    embed = discord.Embed(title="🎁 Daily Reward Claimed!",
-description=(
-    f"Received **R${DAILY}**!\n"
-    f"**New Balance:** {fmt(data[uid]['balance'])}"
-),
-                          color=0x00FF88)
-    embed.set_footer(text="Come back in 24 hours!")
-    await ctx.send(embed=embed)
+    e = embed("Daily Reward Claimed!",
+              f"Received **R${DAILY}**!\n"
+              f"**New Balance:** {fmt(data[uid]['balance'])}",
+              C.SUCCESS, icon="🎁", footer="Come back in 24 hours!")
+    await ctx.send(embed=e)
 
 
 @bot.command(name='invites')
@@ -2838,13 +2911,13 @@ async def invites_cmd(ctx, member: discord.Member = None):
     else:
         daily_invs = data[uid].get('daily_invites', 0)
     total_invs = data[uid].get('total_invites', 0)
-    embed = discord.Embed(title=f"📨 {target.name}'s Invites", color=0x00BFFF)
-    embed.add_field(name="Today's Invites", value=f"**{daily_invs} / 2**", inline=True)
-    embed.add_field(name="Total Invites",   value=f"**{total_invs}**",     inline=True)
+    e = embed(f"{target.name}'s Invites", None, C.SECONDARY, icon="📨",
+              footer="Invite 2 people per day to unlock your .daily reward.")
+    e.add_field(name="Today's Invites", value=f"**{daily_invs} / 2**", inline=True)
+    e.add_field(name="Total Invites",   value=f"**{total_invs}**",     inline=True)
     status = "✅ Can claim daily!" if daily_invs >= 2 else f"❌ Need {2 - daily_invs} more invite(s) today"
-    embed.add_field(name="Daily Status", value=status, inline=False)
-    embed.set_footer(text="Invite 2 people per day to unlock your .daily reward.")
-    await ctx.send(embed=embed)
+    e.add_field(name="Daily Status", value=status, inline=False)
+    await ctx.send(embed=e)
 
 
 @bot.command(name='monthly')
@@ -2853,45 +2926,46 @@ async def monthly(ctx):
     current_month = now.strftime('%Y-%m')
     if data[uid].get('last_monthly') == current_month:
         next_m = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
-        embed = discord.Embed(title="📅 Monthly Reward",
-                              description=f"⏳ Already claimed!\nNext in **{(next_m-now).days} days**.", color=0xFF4444)
-        await ctx.send(embed=embed); return
+        e = embed("Monthly Reward", f"⏳ Already claimed!\nNext in **{(next_m-now).days} days**.", C.ERROR, icon="📅")
+        await ctx.send(embed=e); return
     wager_since = data[uid]['stats']['total_wagered'] - data[uid].get('wager_at_last_monthly', 0)
     reward = int(wager_since // 1000)
     if reward == 0:
-        embed = discord.Embed(title="📅 Monthly Reward", description=(
-            f"Need at least **R$1,000** wagered since last claim.\n"
-            f"**Wagered since:** R${wager_since:,}\n**Still need:** R${max(0, 1000-wager_since):,}"), color=0xFF8800)
-        await ctx.send(embed=embed); return
+        e = embed("Monthly Reward",
+                  f"Need at least **R$1,000** wagered since last claim.\n"
+                  f"**Wagered since:** R${wager_since:,}\n**Still need:** R${max(0, 1000-wager_since):,}",
+                  C.WARNING, icon="📅")
+        await ctx.send(embed=e); return
     data[uid]['last_monthly']          = current_month
     data[uid]['wager_at_last_monthly'] = data[uid]['stats']['total_wagered']
     data[uid]['balance']               = data[uid].get('balance', 0) + reward
     data[uid]['bonus_received']        = data[uid].get('bonus_received', 0) + reward
     save_data(data)
-    embed = discord.Embed(title="📅 Monthly Reward Claimed!", description=(
-        f"**Wagered this period:** R${wager_since:,}\n**Reward:** {reward:,} pts\n"
-        f"**New Balance:** {fmt(data[uid]['balance'])}"), color=0x00FF88)
-    await ctx.send(embed=embed)
+    e = embed("Monthly Reward Claimed!",
+              f"**Wagered this period:** R${wager_since:,}\n**Reward:** {reward:,} pts\n"
+              f"**New Balance:** {fmt(data[uid]['balance'])}",
+              C.SUCCESS, icon="📅")
+    await ctx.send(embed=e)
 
 
 @bot.command(name='rakeback')
 async def rakeback(ctx):
     data, uid = get_user(ctx.author.id); available = data[uid].get('rakeback_available', 0.0); amount = int(available)
     if amount < 1:
-        embed = discord.Embed(title="💸 Rakeback", description=(
+        e = embed("Rakeback", (
             f"**Available:** {available:.4f} pts *(need ≥1 to claim)*\n"
             f"**Rate:** 0.2% of all losses\n**Total Lost:** R${data[uid]['stats'].get('total_lost',0):,}"),
-            color=0xFF8800)
-        await ctx.send(embed=embed); return
+            C.WARNING, icon="💸")
+        await ctx.send(embed=e); return
     data[uid]['rakeback_available'] = available - amount
     data[uid]['balance']            = data[uid].get('balance', 0) + amount
     data[uid]['bonus_received']     = data[uid].get('bonus_received', 0) + amount
     save_data(data)
-    embed = discord.Embed(title="💸 Rakeback Claimed!", description=(
+    e = embed("Rakeback Claimed!", (
         f"**Claimed:** {amount:,} pts\n**Remaining:** {(available-amount):.4f}\n"
-        f"**New Balance:** {fmt(data[uid]['balance'])}"), color=0x00FF88)
-    embed.set_footer(text="Rakeback = 0.2% of all losses, accumulated automatically.")
-    await ctx.send(embed=embed)
+        f"**New Balance:** {fmt(data[uid]['balance'])}"), C.SUCCESS, icon="💸",
+        footer="Rakeback = 0.2% of all losses, accumulated automatically.")
+    await ctx.send(embed=e)
 
 # ── Social ────────────────────────────────────────────────────────────────────
 
@@ -2905,11 +2979,11 @@ async def send_points(ctx, member: discord.Member, amount: int):
     recv_bal = get_user_balance(member.id); set_user_balance(member.id, recv_bal + amount)
     sd, suid = get_user(ctx.author.id); sd[suid]['tips_sent'] = sd[suid].get('tips_sent',0) + amount; save_data(sd)
     rd, ruid = get_user(member.id);     rd[ruid]['tips_received'] = rd[ruid].get('tips_received',0) + amount; save_data(rd)
-    embed = discord.Embed(title="🤝 Transfer Complete", description=(
+    e = embed("Transfer Complete", (
         f"**{ctx.author.name}** → **{member.name}**\n**Amount:** R${amount:,}\n\n"
         f"**{ctx.author.name}'s balance:** {fmt(sender_bal-amount)}\n"
-        f"**{member.name}'s balance:** {fmt(recv_bal+amount)}"), color=0x00FF88)
-    await ctx.send(embed=embed)
+        f"**{member.name}'s balance:** {fmt(recv_bal+amount)}"), C.SUCCESS, icon="🤝")
+    await ctx.send(embed=e)
 
 @send_points.error
 async def send_error(ctx, error):
@@ -2977,35 +3051,35 @@ async def _run_rain(channel, amount, host_id, host_label):
     require = host_id is None  # hourly/house rains enforce requirements
     view = RainView(host_id, amount, require=require)
     req_text = _rain_req_text() if require else ""
-    embed = discord.Embed(
-        title="🌧️  It's Raining Points!",
-        description=(
+    e = embed(
+        "It's Raining Points!",
+        (
             f"**{host_label}** is raining **R${amount:,}**!\n\n"
             f"Click **Join Rain** to get your share.\n"
             f"The pot splits equally among everyone who joins.\n\n"
             f"⏳ Rain ends in **{RAIN_DURATION // 60} minutes**."
             f"{req_text}"
         ),
-        color=0x00BFFF
+        C.SECONDARY,
+        icon="🌧️",
+        footer=f"Pot: R${amount:,}  |  Splits equally among all joiners",
     )
-    embed.set_footer(text=f"Pot: R${amount:,}  |  Splits equally among all joiners")
-    msg = await channel.send(embed=embed, view=view)
+    msg = await channel.send(embed=e, view=view)
 
     await asyncio.sleep(RAIN_DURATION - 60)
     if not view.is_finished():
         count = len(view.joiners)
         share = amount // count if count else amount
-        embed.description = (
+        e.description = (
             f"**{host_label}** is raining **R${amount:,}**!\n\n"
             f"Click **Join Rain** to get your share.\n\n"
             f"⏳ **1 minute left!**  "
             f"{'**' + str(count) + ' joined** — share: R$' + f'{share:,}' if count else 'No one joined yet!'}"
             f"{req_text}"
         )
-        try: await msg.edit(embed=embed, view=view)
+        try: await msg.edit(embed=e, view=view)
         except: pass
 
-    await asyncio.sleep(60)
     for item in view.children: item.disabled = True
 
     joiners = list(view.joiners)
@@ -3015,12 +3089,13 @@ async def _run_rain(channel, amount, host_id, host_label):
             refund_txt = f"**R${amount:,}** refunded to the host."
         else:
             refund_txt = "No payout was issued."
-        embed = discord.Embed(
-            title="🌧️  Rain Ended — No Takers",
-            description=f"Nobody joined the rain. {refund_txt}",
-            color=0xFF8800
+        e = embed(
+            "Rain Ended — No Takers",
+            f"Nobody joined the rain. {refund_txt}",
+            C.WARNING,
+            icon="🌧️",
         )
-        try: await msg.edit(embed=embed, view=view)
+        try: await msg.edit(embed=e, view=view)
         except: pass
         return
 
@@ -3046,17 +3121,18 @@ async def _run_rain(channel, amount, host_id, host_label):
         save_data(sd)
 
     wager_note = (f"\n\n*(Claimed points carry a **{RAIN_WAGER_MULTIPLIER}x wager requirement** before withdrawal.)*" if require else "")
-    embed = discord.Embed(
-        title="🌧️  Rain Complete!",
-        description=(
+    e = embed(
+        "Rain Complete!",
+        (
             f"**{host_label}** rained **R${amount:,}** on **{len(joiners)}** player{'s' if len(joiners)!=1 else ''}!\n\n"
             + "\n".join(names)
             + wager_note
         ),
-        color=0x00FF88
+        C.SUCCESS,
+        icon="🌧️",
+        footer=f"Each player received R${share:,}",
     )
-    embed.set_footer(text=f"Each player received R${share:,}")
-    try: await msg.edit(embed=embed, view=view)
+    try: await msg.edit(embed=e, view=view)
     except: pass
 
 
@@ -3108,24 +3184,24 @@ async def sethourlyrain(ctx, channel: discord.TextChannel = None, amount: str = 
     if amt == 0:
         hourly.pop(str(channel.id), None)
         cfg['hourly_rains'] = hourly; save_config(cfg)
-        await ctx.send(embed=discord.Embed(
-            title="🛑 Hourly Rain Disabled",
-            description=f"No more auto-rains in {channel.mention}.",
-            color=0xFF8800)); return
+        await ctx.send(embed=embed(
+            "Hourly Rain Disabled",
+            f"No more auto-rains in {channel.mention}.",
+            color=C.WARNING, icon="🛑")); return
 
     hourly[str(channel.id)] = amt
     cfg['hourly_rains'] = hourly; save_config(cfg)
     if not getattr(bot, '_hourly_rain_started', False):
         bot._hourly_rain_started = True
         bot.loop.create_task(_hourly_rain_loop())
-    embed = discord.Embed(
-        title="🌧️ Hourly Rain Set",
-        description=(
+    e = embed(
+        "Hourly Rain Set",
+        (
             f"Every hour, **R${amt:,}** will rain in {channel.mention}.\n\n"
             f"{_rain_req_text()}"
         ),
-        color=0x00BFFF)
-    await ctx.send(embed=embed)
+        color=C.SECONDARY, icon="🌧️")
+    await ctx.send(embed=e)
 
 
 @sethourlyrain.error
@@ -3176,18 +3252,19 @@ async def giveaway(ctx, amount: str = None, minutes: str = None, *args):
     if req_invites > 0: reqs.append(f"📨 Total invites ≥ **{req_invites}**")
     reqs_str = "\n".join(reqs) if reqs else "✅ Open to everyone!"
 
-    embed = discord.Embed(
-        title="🎉  G I V E A W A Y",
-        description=(
+    e = embed(
+        "Giveaway",
+        (
             f"**Prize:** 🏆 R${amount_val:,} points\n"
             f"**Host:** {ctx.author.mention}\n\n"
             f"**Requirements:**\n{reqs_str}\n\n"
             f"⏳ Ends in **{mins} minute{'s' if mins != 1 else ''}** — press the button below to enter!"
         ),
-        color=0xFFD700
+        C.GOLD,
+        icon="🎉",
+        footer=f"0 entries  ·  {mins}m remaining",
     )
-    embed.set_footer(text=f"0 entries  ·  {mins}m remaining")
-    msg = await ctx.send(embed=embed, view=view)
+    msg = await ctx.send(embed=e, view=view)
 
     # Schedule countdown nudges
     nudges = []
@@ -3203,8 +3280,8 @@ async def giveaway(ctx, amount: str = None, minutes: str = None, *args):
             elapsed += wait
         if not view.is_finished():
             count = len(view.entrants)
-            embed.set_footer(text=f"{count} entr{'ies' if count != 1 else 'y'}  ·  ⚠️ {label} left!")
-            try: await msg.edit(embed=embed, view=view)
+            e.set_footer(text=f"{count} entr{'ies' if count != 1 else 'y'}  ·  ⚠️ {label} left!")
+            try: await msg.edit(embed=e, view=view)
             except: pass
 
     remaining = duration - elapsed
@@ -3218,12 +3295,13 @@ async def giveaway(ctx, amount: str = None, minutes: str = None, *args):
 
     if not entrants:
         set_user_balance(ctx.author.id, get_user_balance(ctx.author.id) + amount_val)
-        embed = discord.Embed(
-            title="🎉 Giveaway Ended — No Entries",
-            description=f"Nobody entered. **R${amount_val:,}** refunded to {ctx.author.mention}.",
-            color=0xFF8800
+        e = embed(
+            "Giveaway Ended — No Entries",
+            f"Nobody entered. **R${amount_val:,}** refunded to {ctx.author.mention}.",
+            C.WARNING,
+            icon="🎉",
         )
-        try: await msg.edit(embed=embed, view=view)
+        try: await msg.edit(embed=e, view=view)
         except: pass
         return
 
@@ -3236,18 +3314,19 @@ async def giveaway(ctx, amount: str = None, minutes: str = None, *args):
     except: winner = None
     winner_str = winner.mention if winner else f"<@{winner_id}>"
 
-    embed = discord.Embed(
-        title="🎉 Giveaway Over!",
-        description=(
+    e = embed(
+        "Giveaway Over!",
+        (
             f"🏆 **Winner:** {winner_str}\n"
             f"💰 **Prize:** R${amount_val:,} points\n"
             f"👥 **Total Entries:** {len(entrants)}\n\n"
             f"**New balance:** {fmt(prev_bal + amount_val)}"
         ),
-        color=0xFFD700
+        C.GOLD,
+        icon="🎉",
+        footer=f"Hosted by {ctx.author.name}  ·  {len(entrants)} entr{'ies' if len(entrants) != 1 else 'y'}",
     )
-    embed.set_footer(text=f"Hosted by {ctx.author.name}  ·  {len(entrants)} entr{'ies' if len(entrants) != 1 else 'y'}")
-    try: await msg.edit(embed=embed, view=view)
+    try: await msg.edit(embed=e, view=view)
     except: pass
     await ctx.send(f"🎊 Congratulations {winner_str}! You won **R${amount_val:,}** points!")
 
@@ -3275,8 +3354,8 @@ async def rank(ctx):
     desc += "**All Ranks:**\n"
     for thresh, name, _ in RANKS:
         marker = "→ " if name == rname else "   "; desc += f"{marker}{name}: R${thresh:,}+\n"
-    embed = discord.Embed(title="🏆 Your Rank", description=desc, color=rcolor)
-    await ctx.send(embed=embed)
+    e = embed("Your Rank", desc, rcolor, icon="🏆")
+    await ctx.send(embed=e)
 
 
 @bot.command(name='clan')
@@ -3291,7 +3370,7 @@ async def clan(ctx, action: str = "help", *, arg: str = ""):
         if any(k.lower() == name.lower() for k in clans): await ctx.send(f"❌ **{name}** already exists!"); return
         clans[name] = {'owner_id': str(ctx.author.id), 'members': [str(ctx.author.id)], 'created_at': datetime.now(timezone.utc).isoformat()[:10]}
         save_clans(clans); data[uid]['clan'] = name; save_data(data)
-        await ctx.send(embed=discord.Embed(title="🛡️ Clan Created!", description=f"You created **{name}**!\nShare `.clan join {name}` with friends.", color=0x00FF88))
+        await ctx.send(embed=embed("Clan Created!", f"You created **{name}**!\nShare `.clan join {name}` with friends.", C.SUCCESS, icon="🛡️"))
     elif action == "join":
         name = arg.strip()
         if not name: await ctx.send("❌ Usage: `.clan join <name>`"); return
@@ -3301,7 +3380,7 @@ async def clan(ctx, action: str = "help", *, arg: str = ""):
         if data[uid].get('clan'): await ctx.send(f"❌ You're already in **{data[uid]['clan']}**!"); return
         clans[real]['members'].append(str(ctx.author.id)); save_clans(clans)
         data[uid]['clan'] = real; save_data(data)
-        await ctx.send(embed=discord.Embed(title="🛡️ Joined Clan!", description=f"You joined **{real}**!", color=0x00FF88))
+        await ctx.send(embed=embed("Joined Clan!", f"You joined **{real}**!", C.SUCCESS, icon="🛡️"))
     elif action == "leave":
         data, uid = get_user(ctx.author.id); cn = data[uid].get('clan')
         if not cn: await ctx.send("❌ You're not in a clan!"); return
@@ -3314,7 +3393,7 @@ async def clan(ctx, action: str = "help", *, arg: str = ""):
             if not c['members']: del clans[cn]
             save_clans(clans)
         data[uid]['clan'] = None; save_data(data)
-        await ctx.send(embed=discord.Embed(title="🛡️ Left Clan", description=f"You left **{cn}**.", color=0xFF8800))
+        await ctx.send(embed=embed("Left Clan", f"You left **{cn}**.", C.WARNING, icon="🛡️"))
     elif action == "disband":
         data, uid = get_user(ctx.author.id); cn = data[uid].get('clan')
         if not cn: await ctx.send("❌ You're not in a clan!"); return
@@ -3326,7 +3405,7 @@ async def clan(ctx, action: str = "help", *, arg: str = ""):
         for mid in members:
             if mid in all_data: all_data[mid]['clan'] = None
         save_data(all_data)
-        await ctx.send(embed=discord.Embed(title="🛡️ Clan Disbanded", description=f"**{cn}** has been disbanded.", color=0xFF4444))
+        await ctx.send(embed=embed("Clan Disbanded", f"**{cn}** has been disbanded.", C.ERROR, icon="🛡️"))
     elif action == "kick":
         match = re.search(r'<@!?(\d+)>', arg)
         if not match: await ctx.send("❌ Usage: `.clan kick @member`"); return
@@ -3341,7 +3420,7 @@ async def clan(ctx, action: str = "help", *, arg: str = ""):
         td, tuid = get_user(int(target_id)); td[tuid]['clan'] = None; save_data(td)
         try: user = await bot.fetch_user(int(target_id)); uname = user.name
         except: uname = target_id
-        await ctx.send(embed=discord.Embed(title="🛡️ Member Kicked", description=f"**{uname}** removed from **{cn}**.", color=0xFF8800))
+        await ctx.send(embed=embed("Member Kicked", f"**{uname}** removed from **{cn}**.", C.WARNING, icon="🛡️"))
     elif action == "info":
         name = arg.strip() if arg else None
         if not name:
@@ -3354,12 +3433,12 @@ async def clan(ctx, action: str = "help", *, arg: str = ""):
         except: on = "Unknown"
         all_data = load_data()
         tw = sum(all_data.get(m,{}).get('stats',{}).get('total_wagered',0) for m in c['members'])
-        embed = discord.Embed(title=f"🛡️ {real}", color=0x9B59B6)
-        embed.add_field(name="Owner",   value=on,                  inline=True)
-        embed.add_field(name="Members", value=str(len(c['members'])),inline=True)
-        embed.add_field(name="Founded", value=c.get('created_at','?')[:10], inline=True)
-        embed.add_field(name="Total Wagered", value=f"R${tw:,}", inline=True)
-        await ctx.send(embed=embed)
+        e = embed(real, None, C.LOBBY, icon="🛡️")
+        e.add_field(name="Owner",   value=on,                  inline=True)
+        e.add_field(name="Members", value=str(len(c['members'])),inline=True)
+        e.add_field(name="Founded", value=c.get('created_at','?')[:10], inline=True)
+        e.add_field(name="Total Wagered", value=f"R${tw:,}", inline=True)
+        await ctx.send(embed=e)
     elif action == "top":
         clans = get_clans()
         if not clans: await ctx.send("❌ No clans yet!"); return
@@ -3367,12 +3446,12 @@ async def clan(ctx, action: str = "help", *, arg: str = ""):
         stats = sorted([(n, sum(all_data.get(m,{}).get('stats',{}).get('total_wagered',0) for m in c['members']), len(c['members'])) for n,c in clans.items()], key=lambda x: x[1], reverse=True)
         medals = ["🥇","🥈","🥉","4️⃣","5️⃣"]
         lines = [f"{medals[i]} **{n}**  —  R${t:,}  ({m} members)" for i,(n,t,m) in enumerate(stats[:5])]
-        await ctx.send(embed=discord.Embed(title="🛡️ Clan Leaderboard", description="\n".join(lines), color=0xFFD700))
+        await ctx.send(embed=embed("Clan Leaderboard", "\n".join(lines), C.GOLD, icon="🛡️"))
     else:
-        embed = discord.Embed(title="🛡️ Clan Commands", color=0x9B59B6)
+        e = embed("Clan Commands", None, C.LOBBY, icon="🛡️")
         for n, v in [(".clan create <name>","Create a new clan"),(".clan join <name>","Join a clan"),(".clan leave","Leave your clan"),(".clan disband","Disband your clan (owner)"),(".clan kick @member","Kick a member (owner)"),(".clan info [name]","View clan details"),(".clan top","Top 5 clans")]:
-            embed.add_field(name=n, value=v, inline=False)
-        await ctx.send(embed=embed)
+            e.add_field(name=n, value=v, inline=False)
+        await ctx.send(embed=e)
 
 
 @bot.command(name='price')
@@ -3386,29 +3465,34 @@ async def price(ctx, amount: int = None):
             f"USD: **${usd:.2f}**\n\n"
             f"Rate: **{amount:,} POINT = {amount:,} Robux Or ${usd:.2f}**"
         )
-        embed = discord.Embed(title="💱 Price Conversion", description=description, color=0x00BFFF)
-        await ctx.send(embed=embed)
+        e = embed("Price Conversion", description, C.SECONDARY, icon="💱")
+        await ctx.send(embed=e)
     else:
         rows = [("1","R$1.00","$0.0037"),("100","R$100.00","$0.37"),("1,000","R$1,000","$3.70"),
                 ("10,000","R$10,000","$37.00"),("100,000","R$100,000","$370.00"),("1,000,000","R$1,000,000","$3,700.00")]
         lines = ["```", f"{'Points':<12}  {'R$':>12}  {'USD':>10}", "-"*38]
         for pts, brl, usd in rows: lines.append(f"{pts:<12}  {brl:>12}  {usd:>10}")
         lines.append("```")
-        embed = discord.Embed(title="💹 LuckyBet Points Price", description="\n".join(lines), color=0x00BFFF)
-        embed.set_footer(text="Tip: .price <amount> to convert a specific value  |  Rate: 1pt = R$1 = $0.0037")
-        await ctx.send(embed=embed)
+        e = embed(
+            "LuckyBet Points Price",
+            "\n".join(lines),
+            C.SECONDARY,
+            icon="💹",
+            footer="Tip: .price <amount> to convert a specific value  |  Rate: 1pt = R$1 = $0.0037",
+        )
+        await ctx.send(embed=e)
 
 
 @bot.group(name='thread', invoke_without_command=True)
 async def thread_cmd(ctx):
-    embed = discord.Embed(title="💬 Thread Commands", color=0x00BFFF, description=(
+    e = embed("Thread Commands", color=C.SECONDARY, icon="💬", description=(
         "`.thread create` — Create a private thread\n"
         "`.thread close` — Close (archive) the current thread\n"
         "`.thread add @user` — Add a user to the current thread\n"
         "`.thread remove @user` — Remove a user from the current thread\n"
         "`.thread rename <new name>` — Rename the current thread"
     ))
-    await ctx.send(embed=embed)
+    await ctx.send(embed=e)
 
 @thread_cmd.command(name='create')
 async def thread_create(ctx):
@@ -3438,9 +3522,9 @@ async def thread_create(ctx):
         await thread.send(f"Welcome {ctx.author.mention}! 👋 This is your private thread.")
         thread_activity[thread.id] = datetime.now(timezone.utc)
         user_threads.setdefault(ctx.author.id, set()).add(thread.id)
-        embed = discord.Embed(title="💬 Thread Created", description=f"Your thread: {thread.mention}", color=0x00FF99)
-        embed.set_footer(text="Threads auto-close after 24h of inactivity")
-        await ctx.send(embed=embed)
+        e = embed("Thread Created", f"Your thread: {thread.mention}", color=C.SUCCESS, icon="💬",
+                  footer="Threads auto-close after 24h of inactivity")
+        await ctx.send(embed=e)
     except discord.Forbidden:
         await ctx.send("❌ I don't have permission to create private threads!")
     except Exception as e:
@@ -3472,8 +3556,8 @@ async def thread_add(ctx, member: discord.Member = None):
         return
     try:
         await ctx.channel.add_user(member)
-        embed = discord.Embed(title="💬 User Added", description=f"{member.mention} has been added to the thread.", color=0x00FF99)
-        await ctx.send(embed=embed)
+        e = embed("User Added", f"{member.mention} has been added to the thread.", color=C.SUCCESS, icon="💬")
+        await ctx.send(embed=e)
     except discord.Forbidden:
         await ctx.send("❌ I don't have permission to add users to this thread!")
     except Exception as e:
@@ -3489,8 +3573,8 @@ async def thread_remove(ctx, member: discord.Member = None):
         return
     try:
         await ctx.channel.remove_user(member)
-        embed = discord.Embed(title="💬 User Removed", description=f"{member.mention} has been removed from the thread.", color=0xFF4444)
-        await ctx.send(embed=embed)
+        e = embed("User Removed", f"{member.mention} has been removed from the thread.", color=C.ERROR, icon="💬")
+        await ctx.send(embed=e)
     except discord.Forbidden:
         await ctx.send("❌ I don't have permission to remove users from this thread!")
     except Exception as e:
@@ -3507,9 +3591,9 @@ async def thread_rename(ctx, *, new_name: str = None):
         await ctx.send("❌ Thread name must be 100 characters or less!"); return
     try:
         await ctx.channel.edit(name=new_name)
-        embed = discord.Embed(title="💬 Thread Renamed",
-                              description=f"Thread renamed to **{new_name}**", color=0x00BFFF)
-        await ctx.send(embed=embed)
+        e = embed("Thread Renamed",
+                  f"Thread renamed to **{new_name}**", color=C.SECONDARY, icon="💬")
+        await ctx.send(embed=e)
     except discord.Forbidden:
         await ctx.send("❌ I don't have permission to rename this thread!")
     except Exception as e:
@@ -3542,24 +3626,21 @@ def _jackpot_embed_live():
     now    = datetime.now(timezone.utc)
     secs   = max(0, int((state['ends_at'] - now).total_seconds())) if state['ends_at'] else 0
     total  = state['total']
-    embed  = discord.Embed(
-        title="🎰  Jackpot — Round Open!",
-        description=(
+    e = embed("Jackpot — Round Open!",
+        (
             f"⏳ Drawing in **{secs}s**\n"
             f"💰 Total Pot: **R${total:,}**\n"
             f"👥 Players: **{len(state['entries'])}**\n\n"
             f"🔐 Pre-draw Hash: `{state['public_hash'][:20]}…`"
-        ),
-        color=0xFFD700,
-    )
+        ), C.GOLD, icon="🎰",
+        footer=f"Min: R${JACKPOT_MIN_BET:,}  |  Fail chance: {int(JACKPOT_FAIL_ODDS*100)}%  |  House edge: {int(JACKPOT_HOUSE_EDGE*100)}%")
     if state['entries']:
         lines = []
-        for uid, e in sorted(state['entries'].items(), key=lambda x: x[1]['amount'], reverse=True):
-            pct = e['amount'] / total * 100 if total else 0
-            lines.append(f"**{e['name']}** — R${e['amount']:,} ({pct:.1f}% chance)")
-        embed.add_field(name="🎟️ Entries", value="\n".join(lines[:15]), inline=False)
-    embed.set_footer(text=f"Min: R${JACKPOT_MIN_BET:,}  |  Fail chance: {int(JACKPOT_FAIL_ODDS*100)}%  |  House edge: {int(JACKPOT_HOUSE_EDGE*100)}%")
-    return embed
+        for uid, ent in sorted(state['entries'].items(), key=lambda x: x[1]['amount'], reverse=True):
+            pct = ent['amount'] / total * 100 if total else 0
+            lines.append(f"**{ent['name']}** — R${ent['amount']:,} ({pct:.1f}% chance)")
+        e.add_field(name="🎟️ Entries", value="\n".join(lines[:15]), inline=False)
+    return e
 
 
 async def _run_jackpot_draw():
@@ -3591,35 +3672,29 @@ async def _run_jackpot_draw():
     if len(entries) < JACKPOT_MIN_PLAYERS:
         for uid, e in entries.items():
             set_user_balance(uid, get_user_balance(uid) + e['amount'])
-        embed = discord.Embed(
-            title="❌  Jackpot — Cancelled",
-            description=(
+        e = embed("Jackpot — Cancelled",
+            (
                 f"Only **{len(entries)}** player(s) joined "
                 f"({JACKPOT_MIN_PLAYERS} required).\n"
                 f"💸 All bets have been **refunded**."
-            ),
-            color=0xFF4444,
-        )
-        pf_add_field(embed, server_seed, client_seed, public_hash, "jackpot")
-        if live_msg: await live_msg.edit(embed=embed)
-        else: await channel.send(embed=embed)
+            ), C.ERROR, icon="❌")
+        pf_add_field(e, server_seed, client_seed, public_hash, "jackpot")
+        if live_msg: await live_msg.edit(embed=e)
+        else: await channel.send(embed=e)
         return
 
     # ── Fail check (nonce 0) ─────────────────────────────────────────────────
     fail_val = pf_derive(server_seed, client_seed, nonce=0)
     if fail_val < JACKPOT_FAIL_ODDS:
-        embed = discord.Embed(
-            title="💥  Jackpot — FAILED!",
-            description=(
+        e = embed("Jackpot — FAILED!",
+            (
                 f"The jackpot has **failed** and nobody wins!\n"
                 f"💀 **R${total:,}** has been swallowed by the house.\n\n"
                 f"*(Fail roll: `{fail_val:.4f}` < `{JACKPOT_FAIL_ODDS}` threshold)*"
-            ),
-            color=0xFF0000,
-        )
-        pf_add_field(embed, server_seed, client_seed, public_hash, "jackpot")
-        if live_msg: await live_msg.edit(embed=embed)
-        else: await channel.send(embed=embed)
+            ), C.ERROR, icon="💥")
+        pf_add_field(e, server_seed, client_seed, public_hash, "jackpot")
+        if live_msg: await live_msg.edit(embed=e)
+        else: await channel.send(embed=e)
         return
 
     # ── Weighted draw (nonce 1) ───────────────────────────────────────────────
@@ -3646,27 +3721,27 @@ async def _run_jackpot_draw():
     try: winner_user = await bot.fetch_user(winner_uid)
     except: winner_user = None
 
-    embed = discord.Embed(title="🎉  Jackpot — WINNER!", color=0x00FF88)
-    embed.description = (
-        f"🏆 **{winner_name}** wins **R${winnings:,}**!\n"
-        f"🎟️ Had a **{winner_pct:.1f}%** chance "
-        f"(contributed R${winner_contribution:,} of R${total:,})\n"
-        f"🏦 New balance: **{fmt(new_bal)}**\n\n"
-        f"*(Draw roll: `{draw_val:.4f}`)*"
-    )
+    e = embed("Jackpot — WINNER!",
+        (
+            f"🏆 **{winner_name}** wins **R${winnings:,}**!\n"
+            f"🎟️ Had a **{winner_pct:.1f}%** chance "
+            f"(contributed R${winner_contribution:,} of R${total:,})\n"
+            f"🏦 New balance: **{fmt(new_bal)}**\n\n"
+            f"*(Draw roll: `{draw_val:.4f}`)*"
+        ), C.SUCCESS, icon="🎉")
     if winner_user:
-        embed.set_thumbnail(url=winner_user.display_avatar.url)
+        e.set_thumbnail(url=winner_user.display_avatar.url)
 
     lines = []
-    for uid, e in sorted(entries.items(), key=lambda x: x[1]['amount'], reverse=True):
-        pct    = e['amount'] / total * 100
+    for uid, ent in sorted(entries.items(), key=lambda x: x[1]['amount'], reverse=True):
+        pct    = ent['amount'] / total * 100
         marker = "👑" if uid == winner_uid else "❌"
-        lines.append(f"{marker} **{e['name']}** — R${e['amount']:,} ({pct:.1f}%)")
-    embed.add_field(name="🎟️ All Entries", value="\n".join(lines[:15]), inline=False)
-    pf_add_field(embed, server_seed, client_seed, public_hash, "jackpot")
+        lines.append(f"{marker} **{ent['name']}** — R${ent['amount']:,} ({pct:.1f}%)")
+    e.add_field(name="🎟️ All Entries", value="\n".join(lines[:15]), inline=False)
+    pf_add_field(e, server_seed, client_seed, public_hash, "jackpot")
 
-    if live_msg: await live_msg.edit(embed=embed)
-    else: await channel.send(embed=embed)
+    if live_msg: await live_msg.edit(embed=e)
+    else: await channel.send(embed=e)
 
     guild = bot.get_guild(channel.guild.id) if channel else None
     asyncio.create_task(send_to_history(guild, 'jackpot', winner_name, winner_uid, winner_contribution, True, winnings, new_bal))
@@ -3682,9 +3757,8 @@ async def jackpot_cmd(ctx, amount: str = None):
     # ── No argument: show status ──────────────────────────────────────────────
     if amount is None:
         if not state['active']:
-            embed = discord.Embed(
-                title="🎰  Jackpot",
-                description=(
+            e = embed("Jackpot",
+                (
                     "No jackpot is currently running.\n\n"
                     f"Start one with `.jackpot <amount>`!\n\n"
                     f"• Min entry: **R${JACKPOT_MIN_BET:,}**\n"
@@ -3692,10 +3766,8 @@ async def jackpot_cmd(ctx, amount: str = None):
                     f"• Contribution = your win chance (more = better)\n"
                     f"• **{int(JACKPOT_FAIL_ODDS*100)}%** chance the pot **fails** and nobody wins\n"
                     f"• **{int(JACKPOT_HOUSE_EDGE*100)}%** house edge deducted from the prize"
-                ),
-                color=0x9B59B6,
-            )
-            await ctx.send(embed=embed)
+                ), C.LOBBY, icon="🎰")
+            await ctx.send(embed=e)
         else:
             await ctx.send(embed=_jackpot_embed_live())
         return
@@ -3760,8 +3832,8 @@ async def leaderboard(ctx):
         try: user = await bot.fetch_user(int(uid)); name = user.name
         except: name = "Unknown"
         lines.append(f"{medals[idx]} **{name}**  —  {fmt(ud['balance'])}")
-    embed = discord.Embed(title="🏆  LuckyBet Leaderboard", description="\n".join(lines), color=0xFFD700)
-    await ctx.send(embed=embed)
+    e = embed("LuckyBet Leaderboard", "\n".join(lines), C.GOLD, icon="🏆")
+    await ctx.send(embed=e)
 
 
 @bot.command(name='stats')
@@ -3794,10 +3866,15 @@ async def stats(ctx, member: discord.Member = None):
         f"📥 **Tips Received**\n{ud.get('tips_received',0):,.2f} points\n"
         f"🏦 **Total Withdrawn**\n{ud.get('total_withdrawn',0):,.2f} points"
     )
-    embed = discord.Embed(title=f"📊 {target.name}'s Profile", description=desc, color=0x1E90FF)
-    embed.set_thumbnail(url=target.display_avatar.url)
-    embed.set_footer(text=f"R${bal:,.2f}  ≈  ${bal*POINTS_TO_USD:.2f} USD")
-    await ctx.send(embed=embed)
+    e = embed(
+        f"{target.name}'s Profile",
+        desc,
+        C.PRIMARY,
+        icon="📊",
+        thumbnail=target.display_avatar.url,
+        footer=f"R${bal:,.2f}  ≈  ${bal*POINTS_TO_USD:.2f} USD",
+    )
+    await ctx.send(embed=e)
 
 @stats.error
 async def stats_error(ctx, error):
@@ -3845,18 +3922,20 @@ async def housebal(ctx):
     total_bets = total_won_count + total_loss_count
     house_edge = (total_lost / total_wagered * 100.0) if total_wagered else 0.0
 
-    color = 0x00E676 if house_profit_pts >= 0 else 0xFF4444
-    embed = discord.Embed(
-        title="🏦 LuckyBet — House Bankroll",
-        description=(
+    color = C.SUCCESS if house_profit_pts >= 0 else C.ERROR
+    e = embed(
+        "LuckyBet — House Bankroll",
+        (
             f"**House Profit:** `{house_profit_pts:+,}` pts  "
             f"(≈ **${house_profit_usd:+,.2f}**)\n"
             f"_Deposits − Withdrawals − Player Balances − Rakeback owed_"
         ),
-        color=color,
+        color,
+        icon="🏦",
+        footer=f"1 pt ≈ ${POINTS_TO_USD:.4f} USD",
     )
 
-    embed.add_field(
+    e.add_field(
         name="💰 Money In",
         value=(
             f"Deposits: **${total_deposited_usd:,.2f}**\n"
@@ -3864,7 +3943,7 @@ async def housebal(ctx):
         ),
         inline=True,
     )
-    embed.add_field(
+    e.add_field(
         name="💸 Money Out",
         value=(
             f"Withdrawn: **{total_withdrawn_pts:,}** pts\n"
@@ -3872,7 +3951,7 @@ async def housebal(ctx):
         ),
         inline=True,
     )
-    embed.add_field(
+    e.add_field(
         name="👥 Player Liability",
         value=(
             f"Balances: **{player_balances:,}** pts\n"
@@ -3881,7 +3960,7 @@ async def housebal(ctx):
         ),
         inline=False,
     )
-    embed.add_field(
+    e.add_field(
         name="🎲 Wager Stats",
         value=(
             f"Total wagered: **{total_wagered:,}** pts\n"
@@ -3891,8 +3970,7 @@ async def housebal(ctx):
         ),
         inline=False,
     )
-    embed.set_footer(text=f"1 pt ≈ ${POINTS_TO_USD:.4f} USD")
-    await ctx.send(embed=embed)
+    await ctx.send(embed=e)
 
 
 @bot.command(name="resethouse", aliases=["housereset"])
@@ -3927,12 +4005,12 @@ async def resethouse(ctx, scope: str = "all"):
         touched += 1
     save_data(data)
 
-    embed = discord.Embed(
-        title="🧹 House Stats Reset",
-        description=f"Scope: **{scope}** • Users updated: **{touched}**",
-        color=0x00FF88,
+    e = embed(
+        "House Stats Reset",
+        f"Scope: **{scope}** • Users updated: **{touched}**",
+        color=C.SUCCESS, icon="🧹",
     )
-    await ctx.send(embed=embed)
+    await ctx.send(embed=e)
 
 
 @resethouse.error
@@ -3969,16 +4047,16 @@ GAMES_CATALOG = [
 
 @bot.command(name='games')
 async def games_command(ctx):
-    embed = discord.Embed(
-        title="🎮  LuckyBet — All Games",
-        description=f"**{len(GAMES_CATALOG)}** games available. Use `.help` for the full command list.",
-        color=0x9B59B6)
+    e = embed(
+        "LuckyBet — All Games",
+        f"**{len(GAMES_CATALOG)}** games available. Use `.help` for the full command list.",
+        color=C.LOBBY, icon="🎮")
     lines = [f"{emoji} `{usage}`\n— {desc}" for emoji, usage, desc in GAMES_CATALOG]
     half = (len(lines) + 1) // 2
-    embed.add_field(name="\u200b", value="\n".join(lines[:half]), inline=True)
-    embed.add_field(name="\u200b", value="\n".join(lines[half:]), inline=True)
-    embed.set_footer(text="All games are provably fair — verify any result with .verify")
-    await ctx.send(embed=embed)
+    e.add_field(name="\u200b", value="\n".join(lines[:half]), inline=True)
+    e.add_field(name="\u200b", value="\n".join(lines[half:]), inline=True)
+    e.set_footer(text="All games are provably fair — verify any result with .verify")
+    await ctx.send(embed=e)
 
 
 async def nowpayments_request(method, path, payload=None):
@@ -4005,11 +4083,12 @@ async def credit_deposit(payment_id, dep):
     user = None
     try:
         user = await bot.fetch_user(uid)
-        embed = discord.Embed(color=0x00FF88, description=(
+        e = embed(None, (
             f"🎉 **Deposit Confirmed!**\n"
             f"Your payment of **${rec['usd']:.2f}** was successfully received. "
-            f"**{rec['points']:,} points** have been permanently added to your casino balance!"))
-        await user.send(embed=embed)
+            f"**{rec['points']:,} points** have been permanently added to your casino balance!"),
+            C.SUCCESS)
+        await user.send(embed=e)
     except Exception:
         pass
     await log_deposit(rec, payment_id, user)
@@ -4026,14 +4105,14 @@ async def log_deposit(rec, payment_id, user=None):
         return
     uid = int(rec['user_id'])
     who = user.mention if user else f"<@{uid}>"
-    embed = discord.Embed(title="💸 Deposit Logged", color=0x00FF88, timestamp=datetime.now(timezone.utc))
-    embed.description = (
+    e = embed("Deposit Logged", None, C.SUCCESS, icon="💸",
+              footer=f"Payment ID: {payment_id}")
+    e.description = (
         f"**User:** {who} (`{uid}`)\n"
         f"**Amount:** ${rec['usd']:.2f}  ·  {rec.get('pay_amount', '?')} LTC\n"
         f"**Credited:** {rec['points']:,} points")
-    embed.set_footer(text=f"Payment ID: {payment_id}")
     try:
-        await channel.send(embed=embed)
+        await channel.send(embed=e)
     except Exception:
         pass
 
@@ -4086,15 +4165,16 @@ async def deposit(ctx, amount: str = None):
     save_deposits(deposits)
 
     qr = f"https://api.qrserver.com/v1/create-qr-code/?size=240x240&data={pay_address}"
-    embed = discord.Embed(title="💸 LTC Deposit", color=0xFFD700, description=(
+    e = embed("LTC Deposit", (
         f"Send **exactly** the amount below to the address. You'll get **{points:,} points** "
-        f"(${usd:.2f}) once it confirms on-chain.\n\u200b"))
-    embed.add_field(name="Amount to send", value=f"```{pay_amount} LTC```", inline=False)
-    embed.add_field(name="LTC Address",   value=f"```{pay_address}```", inline=False)
-    embed.set_thumbnail(url=qr)
-    embed.set_footer(text="Send only LTC. Points are credited automatically after network confirmation.")
+        f"(${usd:.2f}) once it confirms on-chain.\n\u200b"),
+        C.ACCENT, icon="💸",
+        footer="Send only LTC. Points are credited automatically after network confirmation.")
+    e.add_field(name="Amount to send", value=f"```{pay_amount} LTC```", inline=False)
+    e.add_field(name="LTC Address",   value=f"```{pay_address}```", inline=False)
+    e.set_thumbnail(url=qr)
     try:
-        await ctx.author.send(embed=embed)
+        await ctx.author.send(embed=e)
         await notice.edit(content=f"{ctx.author.mention} 📬 Sent your unique LTC deposit address in DMs!")
     except discord.Forbidden:
         await notice.edit(content=f"{ctx.author.mention} ❌ I couldn't DM you — enable DMs from server members and try again.")
@@ -4300,18 +4380,18 @@ async def withdraw(ctx, amount: int = None, ltc_address: str = None):
     data[uid]['total_withdrawn'] = data[uid].get('total_withdrawn', 0) + amount
     save_data(data)
 
-    embed = discord.Embed(title="✅ Withdrawal Sent", color=0x00E676, description=(
+    e = embed("Withdrawal Sent", (
         f"**{amount:,} pts** (≈ **${usd_value:.2f}**) → `{ltc_amount:.8f} LTC`\n"
         f"To: `{ltc_address}`\n"
-        f"Status: **sending** — usually confirms within a few minutes."))
-    embed.set_footer(text=f"Payout ID: {np_payout_id}")
-    await notice.edit(content=None, embed=embed)
+        f"Status: **sending** — usually confirms within a few minutes."),
+        C.SUCCESS, icon="✅",
+        footer=f"Payout ID: {np_payout_id}")
+    await notice.edit(content=None, embed=e)
 
     # Optional admin log channel
     ch = bot.get_channel(WITHDRAW_CHANNEL_ID)
     if ch:
-        log = discord.Embed(title="💸 Auto-Withdrawal Processed", color=0x00E676,
-                            timestamp=datetime.now(timezone.utc))
+        log = embed("Auto-Withdrawal Processed", None, C.SUCCESS, icon="💸")
         log.description = (
             f"**User:** {ctx.author.mention} (`{ctx.author.id}`)\n"
             f"**Amount:** {amount:,} pts  ·  ${usd_value:.2f}  ·  {ltc_amount:.8f} LTC\n"
@@ -4476,28 +4556,28 @@ HELP_CATEGORIES = {
 
 
 def _help_home_embed():
-    embed = discord.Embed(
-        title="🎰  LuckyBet — Help",
-        description=(
+    e = embed(
+        "LuckyBet — Help",
+        (
             "Pick a **category** from the menu below to view its commands.\n\n"
             + "\n".join(f"{c['emoji']} **{c['label'].split(' ', 1)[1]}** — {c['description']}"
                        for c in HELP_CATEGORIES.values())
         ),
-        color=0x9B59B6,
+        color=C.LOBBY, icon="🎰",
+        footer="💱 R$1 = 1 point  |  R$1,000 ≈ $3.70 USD",
     )
-    embed.set_footer(text="💱 R$1 = 1 point  |  R$1,000 ≈ $3.70 USD")
-    return embed
+    return e
 
 
 def _help_category_embed(key):
     cat = HELP_CATEGORIES[key]
-    embed = discord.Embed(
-        title=f"{cat['label']} — Commands",
-        description="\n".join(cat["lines"]),
+    e = embed(
+        f"{cat['label']} — Commands",
+        "\n".join(cat["lines"]),
         color=cat["color"],
+        footer="Use the menu to switch categories • 'Home' to go back",
     )
-    embed.set_footer(text="Use the menu to switch categories • 'Home' to go back")
-    return embed
+    return e
 
 
 class HelpView(discord.ui.View):
