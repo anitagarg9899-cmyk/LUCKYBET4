@@ -924,10 +924,10 @@ def bj_embed(player_cards, dealer_cards, bet, show_dealer=False,
     return embed(title, desc, color)
 
 
-def bj_card_payload(username, pc, dc, bet, hide_hole, status, color, title, extra="", footer=None):
+async def bj_card_payload(username, pc, dc, bet, hide_hole, status, color, title, extra="", footer=None):
     """Build (embed, file) using the image card."""
     pv = cv(pc); dv = cv(dc)
-    buf = blackjack_card(pc, dc, pv, dv, bet, status=status, hide_dealer=hide_hole)
+    buf = await asyncio.to_thread(blackjack_card, pc, dc, pv, dv, bet, status=status, hide_dealer=hide_hole)
     file = send_image(buf, "bj.png")
     desc = f"**Bet:** R${bet:,}"
     if extra: desc += f"\n\n{extra}"
@@ -955,8 +955,13 @@ class BlackjackView(discord.ui.View):
         for item in self.children:
             if getattr(item, 'custom_id', None) == 'bj_double': item.disabled = True
 
+    async def _ack(self, interaction: discord.Interaction):
+        """Acknowledge button clicks immediately so Discord doesn't show interaction failed."""
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+
     async def _edit(self, interaction, hide_hole, status, color, title, extra="", view=None):
-        embed, file = bj_card_payload(self.user_name, self.player_cards, self.dealer_cards,
+        embed, file = await bj_card_payload(self.user_name, self.player_cards, self.dealer_cards,
                                       self.bet, hide_hole, status, color, title, extra)
         kwargs = {'embed': embed, 'attachments': [file]}
         if view is not None: kwargs['view'] = view
@@ -968,7 +973,9 @@ class BlackjackView(discord.ui.View):
     async def hit_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Not your game!", ephemeral=True); return
-        if self.game_over: return
+        if self.game_over:
+            await interaction.response.send_message("This blackjack game already ended.", ephemeral=True); return
+        await self._ack(interaction)
         self.first_action = False; self._disable_double()
         self.player_cards.append(self.deck.pop())
         if cv(self.player_cards) > 21:
@@ -980,19 +987,33 @@ class BlackjackView(discord.ui.View):
     async def stand_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Not your game!", ephemeral=True); return
-        if self.game_over: return
+        if self.game_over:
+            await interaction.response.send_message("This blackjack game already ended.", ephemeral=True); return
+        await self._ack(interaction)
         await self._finish(interaction)
 
     async def double_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Not your game!", ephemeral=True); return
-        if self.game_over: return
+        if self.game_over:
+            await interaction.response.send_message("This blackjack game already ended.", ephemeral=True); return
         if not self.first_action:
             await interaction.response.send_message("Double Down only available before hitting!", ephemeral=True); return
         if self.bet > get_user_balance(self.user_id):
             await interaction.response.send_message("Not enough balance to double down!", ephemeral=True); return
+        await self._ack(interaction)
         self.bet *= 2; self.player_cards.append(self.deck.pop()); self.first_action = False
         await self._finish(interaction)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item) -> None:
+        print(f"ERROR IN BLACKJACK BUTTON {getattr(item, 'custom_id', 'unknown')}: {error!r}")
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send("Blackjack button error — please start a new game.", ephemeral=True)
+            else:
+                await interaction.response.send_message("Blackjack button error — please start a new game.", ephemeral=True)
+        except Exception:
+            pass
 
     async def _finish(self, interaction, bust=False):
         self.game_over = True; self._disable_all(); self.stop(); active_bj.pop(self.user_id, None)
@@ -1305,7 +1326,7 @@ async def addbal(ctx, member: discord.Member, amount: int):
     old_bal = get_user_balance(member.id); new_bal = old_bal + amount
     if new_bal < 0: await ctx.send(f"❌ Cannot reduce {member.name}'s balance below R$0!"); return
     set_user_balance(member.id, new_bal)
-    img_buf = addbal_card(member.name, amount, new_bal)
+    img_buf = await asyncio.to_thread(addbal_card, member.name, amount, new_bal)
     e = embed("🔧 Admin — Balance Updated", color=C.SUCCESS if amount > 0 else C.ERROR, image="attachment://addbal.png")
     await ctx.send(embed=e, file=send_image(img_buf, 'addbal.png'))
 
@@ -1325,7 +1346,7 @@ async def removebal(ctx, member: discord.Member, amount: int):
         await ctx.send(f"❌ **{member.name}** only has **R${old_bal:,}** — can't remove more than their balance!"); return
     new_bal = old_bal - amount
     set_user_balance(member.id, new_bal)
-    img_buf = addbal_card(member.name, -amount, new_bal)
+    img_buf = await asyncio.to_thread(addbal_card, member.name, -amount, new_bal)
     e = embed(
         "Admin — Balance Removed",
         f"Removed **R${amount:,}** from {member.mention}\n**New Balance:** {fmt(new_bal)}",
@@ -1746,16 +1767,9 @@ async def coinflip(ctx, amount: str, choice: str):
         "🎯 Result..."
     ]
 
-    anim_buf = coinflip_anim_card(result, choice, amount, amount if won else 0)
-
     e = embed("🪙 Coin Flip", frames[0], C.ACCENT)
-
-    e.set_image(url="attachment://coinflip_anim.png")
-
-    msg = await ctx.send(
-        embed=e,
-        file=send_image(anim_buf, "coinflip_anim.png")
-    )
+    msg = await ctx.send(embed=e)
+    img_task = asyncio.create_task(asyncio.to_thread(coinflip_card, result, choice, amount, amount if won else 0))
 
     for frame in frames[1:]:
         await asyncio.sleep(0.45)
@@ -1801,7 +1815,7 @@ async def coinflip(ctx, amount: str, choice: str):
 
     pf_add_field(e, server_seed, client_seed, public_hash, "coinflip")
 
-    img_buf = coinflip_card(result, choice, amount, amount if won else 0)
+    img_buf = await img_task
 
     e.set_image(url="attachment://coinflip.png")
 
@@ -1827,7 +1841,7 @@ async def coinflip(ctx, amount: str, choice: str):
 async def balance(ctx, member: discord.Member = None):
     target = member or ctx.author
     bal = get_user_balance(target.id)
-    img_buf = balance_card(target.name, bal)
+    img_buf = await asyncio.to_thread(balance_card, target.name, bal)
     e = embed(f"💰 {target.name}'s Balance", color=C.SECONDARY)
     e.add_field(name="Points", value=f"`{bal:,}`", inline=True)
     e.add_field(name="Cash Value", value=f"`R${bal:,}`", inline=True)
@@ -1864,7 +1878,7 @@ async def dice(ctx, amount: str, guess: int):
     e.add_field(name="Change",     value=f"{'+'if won else '-'}R${amount*(5 if won else 1):,}", inline=True)
     e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
     pf_add_field(e, server_seed, client_seed, public_hash, "dice")
-    img_buf = dice_card([roll], amount, amount * 5 if won else 0, pick=guess)
+    img_buf = await asyncio.to_thread(dice_card, [roll], amount, amount * 5 if won else 0, pick=guess)
     e.set_image(url="attachment://dice.png")
     await msg.edit(embed=e, attachments=[send_image(img_buf, 'dice.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'dice', ctx.author.name, ctx.author.id, amount, won, amount*5 if won else amount, new_bal))
@@ -1904,7 +1918,7 @@ async def limbo(ctx, amount: str, target: str = None):
     e.add_field(name="Change",      value=f"{'+' if won else '-'}R${(profit if won else amount):,}", inline=True)
     e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
     pf_add_field(e, server_seed, client_seed, public_hash, "limbo")
-    img_buf = limbo_card(target_mult, result_mult, amount, profit if won else 0, username=ctx.author.name)
+    img_buf = await asyncio.to_thread(limbo_card, target_mult, result_mult, amount, profit if won else 0, username=ctx.author.name)
     e.set_image(url="attachment://limbo.png")
     await msg.edit(embed=e, attachments=[send_image(img_buf, 'limbo.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'limbo', ctx.author.name, ctx.author.id, amount, won, profit if won else amount, new_bal))
@@ -1948,7 +1962,7 @@ async def rps(ctx, amount: str, choice: str = None):
     e.add_field(name="Change", value="±R$0" if outcome == 'tie' else f"{'+' if won else '-'}R${amount:,}", inline=True)
     e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
     pf_add_field(e, server_seed, client_seed, public_hash, "rps")
-    img_buf = rps_card(player, bot_move, amount, amount if outcome == 'win' else (-amount if outcome == 'lose' else 0), outcome=outcome)
+    img_buf = await asyncio.to_thread(rps_card, player, bot_move, amount, amount if outcome == 'win' else (-amount if outcome == 'lose' else 0), outcome=outcome)
     e.set_image(url="attachment://rps.png")
     await msg.edit(embed=e, attachments=[send_image(img_buf, 'rps.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'rps', ctx.author.name, ctx.author.id, amount, won, amount if outcome != 'tie' else 0, new_bal))
@@ -1988,7 +2002,7 @@ async def slide(ctx, amount: str, target: str = None):
     e.add_field(name="Change",      value=f"{'+' if won else '-'}R${(profit if won else amount):,}", inline=True)
     e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
     pf_add_field(e, server_seed, client_seed, public_hash, "slide")
-    img_buf = slide_card(target_mult, result_mult, amount, profit if won else 0, username=ctx.author.name)
+    img_buf = await asyncio.to_thread(slide_card, target_mult, result_mult, amount, profit if won else 0, username=ctx.author.name)
     e.set_image(url="attachment://slide.png")
     await msg.edit(embed=e, attachments=[send_image(img_buf, 'slide.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'slide', ctx.author.name, ctx.author.id, amount, won, profit if won else amount, new_bal))
@@ -2021,7 +2035,7 @@ async def tight(ctx, amount: str):
     e.add_field(name="Change",     value=f"{'+' if profit >= 0 else '-'}R${abs(profit):,}", inline=True)
     e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
     pf_add_field(e, server_seed, client_seed, public_hash, "tight")
-    img_buf = tight_card(max(1, int(round(result_mult))), 10, amount, payout if won else 0)
+    img_buf = await asyncio.to_thread(tight_card, max(1, int(round(result_mult))), 10, amount, payout if won else 0)
     e.set_image(url="attachment://tight.png")
     await msg.edit(embed=e, attachments=[send_image(img_buf, 'tight.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'tight', ctx.author.name, ctx.author.id, amount, won, profit if won else (amount - payout), new_bal))
@@ -2058,7 +2072,7 @@ async def war(ctx, amount: str):
     e.add_field(name="Change", value="±R$0" if outcome == 'tie' else f"{'+' if won else '-'}R${amount:,}", inline=True)
     e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
     pf_add_field(e, server_seed, client_seed, public_hash, "war")
-    img_buf = war_card(p, dealer, amount, amount if outcome == 'win' else (-amount if outcome == 'lose' else 0))
+    img_buf = await asyncio.to_thread(war_card, p, dealer, amount, amount if outcome == 'win' else (-amount if outcome == 'lose' else 0))
     e.set_image(url="attachment://war.png")
     await msg.edit(embed=e, attachments=[send_image(img_buf, 'war.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'war', ctx.author.name, ctx.author.id, amount, won, amount if outcome != 'tie' else 0, new_bal))
@@ -2099,7 +2113,7 @@ async def valentines(ctx, amount: str):
     e.add_field(name="Won" if won else "Lost", value=fmt(winnings if won else amount), inline=True)
     e.add_field(name="New Balance", value=fmt(new_bal), inline=True)
     pf_add_field(e, server_seed, client_seed, public_hash, "valentines")
-    img_buf = valentines_card(ctx.author.name, "", 100 if won else 0, winnings if won else 0)
+    img_buf = await asyncio.to_thread(valentines_card, ctx.author.name, "", 100 if won else 0, winnings if won else 0)
     e.set_image(url="attachment://valentines.png")
     await msg.edit(embed=e, attachments=[send_image(img_buf, 'valentines.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'valentines', ctx.author.name, ctx.author.id, amount, won, winnings if won else amount, new_bal))
@@ -2136,7 +2150,7 @@ async def twist(ctx, amount: str):
     e.add_field(name="Change", value=f"{'+' if profit >= 0 else '-'}R${abs(profit):,}", inline=True)
     e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
     pf_add_field(e, server_seed, client_seed, public_hash, "twist")
-    img_buf = twist_card([str(r) for r in rolls], amount, payout if won else 0, username=ctx.author.name)
+    img_buf = await asyncio.to_thread(twist_card, [str(r) for r in rolls], amount, payout if won else 0, username=ctx.author.name)
     e.set_image(url="attachment://twist.png")
     await msg.edit(embed=e, attachments=[send_image(img_buf, 'twist.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'twist', ctx.author.name, ctx.author.id, amount, won, profit if won else (amount - payout), new_bal))
@@ -2438,19 +2452,25 @@ async def slots(ctx, amount: str):
         e.description = f"```\n{disp(*(rv+pv))}\n```"; await msg.edit(embed=e)
     await asyncio.sleep(0.4)
     r1,r2,r3 = final
-    if r1==r2==r3: winnings=amount*(100 if r1==GEM else 10); won=True; label="💎 JACKPOT ×100" if r1==GEM else "✨ Triple ×10"
-    elif r1==r2 or r2==r3: winnings=amount*2; won=True; label="Double ×2"
-    else: winnings=0; won=False; label="No match"
+    counts = {sym: final.count(sym) for sym in set(final)}
+    match_symbol, match_count = max(counts.items(), key=lambda item: item[1])
+    if match_count == 3:
+        winnings=amount*(100 if match_symbol==GEM else 10); won=True; label="💎 JACKPOT ×100" if match_symbol==GEM else f"✨ Triple {match_symbol} ×10"
+    elif match_count == 2:
+        winnings=amount*2; won=True; label=f"Double {match_symbol} ×2"
+    else:
+        winnings=0; won=False; label="No match"
     new_bal = bal + winnings if won else bal - amount
     add_to_stats(ctx.author.id, won, amount); set_user_balance(ctx.author.id, new_bal)
     if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
     e = embed(f"🎉 Slots — {label}" if won else "❌ Slots — No Match",
               color=C.SUCCESS if won else C.ERROR)
     e.description = f"```\n{disp(r1,r2,r3)}\n```"
+    e.add_field(name="Matches", value=label, inline=True)
     e.add_field(name="Won" if won else "Lost", value=fmt(winnings if won else amount), inline=True)
     e.add_field(name="New Balance", value=fmt(new_bal), inline=True)
     pf_add_field(e, server_seed, client_seed, public_hash, "slots")
-    img_buf = slots_card(final, amount, winnings if won else 0, username=ctx.author.name)
+    img_buf = await asyncio.to_thread(slots_card, final, amount, winnings if won else 0, username=ctx.author.name, match_label=label)
     e.set_image(url="attachment://slots.png")
     await msg.edit(embed=e, attachments=[send_image(img_buf, 'slots.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'slots', ctx.author.name, ctx.author.id, amount, won, winnings if won else amount, new_bal))
@@ -2485,7 +2505,7 @@ async def roulette(ctx, amount: str, choice: str):
     e.add_field(name="Change",  value=f"{'+'if won else '-'}R${amount:,}", inline=True)
     e.add_field(name="New Balance", value=fmt(new_bal), inline=False)
     pf_add_field(e, server_seed, client_seed, public_hash, "roulette")
-    img_buf = roulette_card(spin, rc, amount, amount if won else 0, pick=choice)
+    img_buf = await asyncio.to_thread(roulette_card, spin, rc, amount, amount if won else 0, pick=choice)
     e.set_image(url="attachment://roulette.png")
     await msg.edit(embed=e, attachments=[send_image(img_buf, 'roulette.png')])
     asyncio.create_task(send_to_history(ctx.guild, 'roulette', ctx.author.name, ctx.author.id, amount, won, amount, new_bal))
@@ -2509,13 +2529,13 @@ async def blackjack_cmd(ctx, amount: str):
         add_to_stats(ctx.author.id, True, amount); set_user_balance(ctx.author.id, new_bal)
         if ctx.guild: asyncio.create_task(assign_rank_role(ctx.guild, ctx.author.id))
         # Step 1: show with hole hidden
-        embed1, file1 = bj_card_payload(ctx.author.name, pc, dc, amount,
+        embed1, file1 = await bj_card_payload(ctx.author.name, pc, dc, amount,
                                         hide_hole=True, status='playing',
                                         color=C.PRIMARY, title="Blackjack — Dealing…")
         msg = await ctx.send(embed=embed1, file=file1)
         await asyncio.sleep(0.9)
         # Step 2: reveal + BLACKJACK banner
-        embed2, file2 = bj_card_payload(ctx.author.name, pc, dc, amount,
+        embed2, file2 = await bj_card_payload(ctx.author.name, pc, dc, amount,
                                         hide_hole=False, status='blackjack',
                                         color=C.SUCCESS,
                                         title="Blackjack — BLACKJACK! (×2.5)",
@@ -2527,7 +2547,7 @@ async def blackjack_cmd(ctx, amount: str):
 
     active_bj[ctx.author.id] = True
     view = BlackjackView(ctx.author.id, ctx.author.name, amount, bal, pc, dc, deck)
-    embed, file = bj_card_payload(ctx.author.name, pc, dc, amount,
+    embed, file = await bj_card_payload(ctx.author.name, pc, dc, amount,
                                   hide_hole=True, status='playing',
                                   color=C.PRIMARY, title="Blackjack",
                                   footer=f"👊 Hit  |  🛑 Stand  |  ⬆️ Double Down  |  🔐 Seed: {client_seed[:8]}… Hash: {public_hash[:12]}…")
