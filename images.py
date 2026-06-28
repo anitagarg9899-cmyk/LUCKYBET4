@@ -292,14 +292,39 @@ def _draw_playing_card(img: Image.Image, top_left: Tuple[int, int],
 
 # ---------- Slots ----------
 
-SLOT_SYMBOLS = ["cherry", "lemon", "bell", "star", "seven", "diamond"]
+SLOT_SYMBOLS = ["apple", "orange", "lemon", "banana", "cherry", "bell", "star", "seven", "diamond"]
+SLOT_EMOJI_MAP = {
+    "🍎": "apple",
+    "🍒": "cherry",
+    "🍊": "orange",
+    "🍋": "lemon",
+    "🍌": "banana",
+    "⭐": "star",
+    "🌟": "star",
+    "7️⃣": "seven",
+    "💎": "diamond",
+}
+
+
+def _slot_kind(kind: str) -> str:
+    text = str(kind).strip().lower()
+    return SLOT_EMOJI_MAP.get(str(kind).strip(), text if text in SLOT_SYMBOLS else "seven")
 
 
 def _draw_slot_symbol(img: Image.Image, center: Tuple[int, int], size: int, kind: str):
     d = ImageDraw.Draw(img)
+    kind = _slot_kind(kind)
     cx, cy = center
     r = size // 2
-    if kind == "cherry":
+    if kind == "apple":
+        d.ellipse((cx - r, cy - int(r * 0.85), cx + r, cy + r), fill=RED, outline=BLACK, width=2)
+        d.ellipse((cx - r // 3, cy - r, cx + r // 3, cy - r // 2), fill=(60, 150, 65), outline=BLACK, width=1)
+        d.line((cx, cy - r, cx + r // 4, cy - r - 16), fill=(100, 70, 35), width=4)
+    elif kind == "orange":
+        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(245, 135, 35), outline=(150, 70, 20), width=2)
+        d.arc((cx - r // 2, cy - r // 3, cx + r // 2, cy + r // 2), 20, 210, fill=(255, 190, 80), width=4)
+        d.ellipse((cx - 8, cy - r + 8, cx + 8, cy - r + 24), fill=(70, 160, 70), outline=BLACK, width=1)
+    elif kind == "cherry":
         d.ellipse((cx - r, cy - 4, cx - 4, cy + r), fill=RED, outline=BLACK, width=2)
         d.ellipse((cx + 4, cy - 4, cx + r, cy + r), fill=RED, outline=BLACK, width=2)
         d.line((cx - r // 2, cy - 4, cx, cy - r), fill=(40, 110, 40), width=3)
@@ -307,6 +332,10 @@ def _draw_slot_symbol(img: Image.Image, center: Tuple[int, int], size: int, kind
     elif kind == "lemon":
         d.ellipse((cx - r, cy - int(r * 0.7), cx + r, cy + int(r * 0.7)),
                   fill=(245, 210, 70), outline=(150, 120, 20), width=2)
+    elif kind == "banana":
+        d.arc((cx - r, cy - r, cx + r, cy + r), 30, 170, fill=(245, 210, 70), width=max(10, r // 3))
+        d.arc((cx - r + 10, cy - r + 16, cx + r - 10, cy + r - 8), 30, 170, fill=(150, 110, 30), width=3)
+        d.ellipse((cx - r + 6, cy - 6, cx - r + 20, cy + 8), fill=(100, 70, 35))
     elif kind == "bell":
         d.pieslice((cx - r, cy - r, cx + r, cy + r), 180, 360,
                    fill=GOLD, outline=GOLD_DARK, width=2)
@@ -461,7 +490,7 @@ def blackjack_card(player_hand: Sequence[str], dealer_hand: Sequence[str],
 
 
 def slots_card(reels: Sequence[str], bet: int, payout: int,
-               username: str = "") -> bytes:
+               username: str = "", match_label: str = "") -> bytes:
     img, d = base_canvas("\u2728 SLOTS", f"{username}  \u00b7  Bet {bet:,}")
     panel = felt_panel((CARD_W - 80, 320))
     img.alpha_composite(panel, dest=(40, 130))
@@ -481,10 +510,18 @@ def slots_card(reels: Sequence[str], bet: int, payout: int,
         sym = reels[i] if i < len(reels) else "seven"
         _draw_slot_symbol(img, (sx + slot_w // 2, y + slot_h // 2), 110, sym)
 
+    if match_label:
+        label_font = font(22, True)
+        label_text = f"MATCHES: {match_label.upper()}"
+        tw = d.textlength(label_text, font=label_font)
+        rounded_rect(d, (int((CARD_W - tw) / 2) - 22, 418, int((CARD_W + tw) / 2) + 22, 462), 14,
+                     fill=(18, 22, 32, 230), outline=GOLD_DARK, width=2)
+        d.text(((CARD_W - tw) / 2, 428), label_text, font=label_font, fill=GOLD if payout > 0 else MUTED)
+
     if payout > 0:
-        _banner(img, f"WIN  +{payout:,}", GREEN)
+        _banner(img, f"WIN  +{payout:,}", GREEN, y=CARD_H - 72)
     else:
-        _banner(img, f"LOSS  -{bet:,}", RED)
+        _banner(img, f"LOSS  -{bet:,}", RED, y=CARD_H - 72)
     return _save(img)
 
 
